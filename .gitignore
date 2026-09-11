@@ -1,0 +1,20 @@
+# Compilation .NET
+bin/
+obj/
+artifacts/
+
+# Visual Studio / Rider
+.vs/
+*.user
+
+# Outils d'assistance locaux
+.claude/
+.omp/
+.impeccable*
+PRODUCT.md
+
+# Maquette de référence locale, non publiée
+maquette/
+
+# Captures d'écran de travail laissées à la racine
+/*.png
