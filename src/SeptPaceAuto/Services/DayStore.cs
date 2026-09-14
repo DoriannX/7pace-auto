@@ -9,6 +9,9 @@ using System.Text.Json;
 
 namespace SeptPaceAuto.Services;
 
+/// <summary>Ce qu'une remise à plat sur 7pace a changé, sans le détail créneau par créneau.</summary>
+public sealed record MirrorChange(int Replaced, int Removed, int Imported, int SecondsDelta);
+
 /// <summary>
 /// Journées persistées un fichier par mois, sous %LOCALAPPDATA%\7pace-auto\days\AAAA-MM.json.
 /// Toutes les mutations passent par ici : c'est le seul endroit qui valide les créneaux.
@@ -173,10 +176,14 @@ public sealed class DayStore
         return snapshot;
     }
 
-    /// <summary>Marque comme envoyés seulement les créneaux dont l'envoi a réellement abouti.</summary>
-    public List<Entry> StampSent(string date, IReadOnlyCollection<int> ids, string sentAt)
+    /// <summary>
+    /// Marque comme envoyés seulement les créneaux dont l'envoi a réellement abouti, et
+    /// retient l'identifiant que 7pace leur a donné : sans lui, la relecture ne peut pas
+    /// reconnaître le créneau et le remplacerait par un bloc regroupé.
+    /// </summary>
+    public List<Entry> StampSent(string date, IReadOnlyDictionary<int, string?> workLogs, string sentAt)
     {
-        if (ids.Count == 0) return Day(date);
+        if (workLogs.Count == 0) return Day(date);
         List<Entry> snapshot;
         lock (_gate)
         {
@@ -184,13 +191,136 @@ public sealed class DayStore
             if (day is null) return new List<Entry>();
             foreach (var entry in day)
             {
-                if (entry.Id is int id && ids.Contains(id)) entry.SentAt = sentAt;
+                if (entry.Id is not int id || !workLogs.TryGetValue(id, out var workLogId)) continue;
+                entry.SentAt = sentAt;
+                entry.WorkLogId = workLogId;
             }
             Persist(TimeRules.MonthKey(date));
             snapshot = Snapshot(day);
         }
         Raise(date, snapshot);
         return snapshot;
+    }
+
+    /// <summary>
+    /// Remet la partie « miroir » de la journée en conformité avec 7pace. Les créneaux non
+    /// envoyés sont des brouillons qui appartiennent à l'application : ils ne sont jamais
+    /// touchés. Les créneaux envoyés, eux, ne sont qu'un reflet : 7pace tranche seul.
+    ///
+    /// Les garde-fous de <see cref="Save"/> — créneau de travail, chevauchement, refus de
+    /// modifier un envoi — ne s'appliquent pas ici : 7pace décrit un fait extérieur, le
+    /// refléter n'est pas une saisie.
+    /// </summary>
+    /// <param name="mirror">Worklogs 7pace de cette journée, heure de début déjà locale.</param>
+    /// <param name="apply">Faux : rien n'est écrit, seuls les compteurs sont calculés.</param>
+    public MirrorChange Reconcile(string date, IReadOnlyList<WorkLog> mirror, bool apply)
+    {
+        TimeRules.ParseDate(date);
+        var profile = _profile();
+        List<Entry>? snapshot = null;
+        MirrorChange change;
+
+        lock (_gate)
+        {
+            var stored = DayList(date, create: apply && mirror.Count > 0);
+            if (stored is null && mirror.Count == 0) return new MirrorChange(0, 0, 0, 0);
+
+            // En aperçu on raisonne sur une copie : aucun état visible ne bouge.
+            var day = apply ? stored! : Snapshot(stored);
+            var before = Total(day);
+
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var replaced = 0;
+            var removed = 0;
+            var imported = 0;
+
+            for (var index = day.Count - 1; index >= 0; index--)
+            {
+                var entry = day[index];
+                if (entry.SentAt is null) continue;   // brouillon : propriété de l'application
+
+                var match = entry.WorkLogId is null
+                    ? null
+                    : mirror.FirstOrDefault(log => string.Equals(log.Id, entry.WorkLogId, StringComparison.Ordinal));
+                if (match is null)
+                {
+                    day.RemoveAt(index);
+                    removed++;
+                    continue;
+                }
+
+                seen.Add(match.Id);
+                var (start, end) = Span(match);
+                if (string.Equals(entry.Start, start, StringComparison.Ordinal)
+                    && string.Equals(entry.End, end, StringComparison.Ordinal)
+                    && entry.WorkItem == match.WorkItem)
+                {
+                    continue;
+                }
+
+                entry.Start = start;
+                entry.End = end;
+                entry.WorkItem = match.WorkItem;
+                replaced++;
+            }
+
+            var stamp = DateTimeOffset.Now.ToString("o", CultureInfo.InvariantCulture);
+            foreach (var log in mirror)
+            {
+                if (!seen.Add(log.Id)) continue;
+
+                var (start, end) = Span(log);
+                var activity = ActivityFor(profile, log.WorkItem);
+                day.Add(new Entry
+                {
+                    Id = NextId(day),
+                    Start = start,
+                    End = end,
+                    Activity = activity,
+                    Title = string.Equals(activity, "ticket", StringComparison.Ordinal) ? $"Fix #{log.WorkItem}" : profile.Label(activity),
+                    WorkItem = log.WorkItem,
+                    Source = "7pace",
+                    SentAt = stamp,
+                    WorkLogId = log.Id,
+                });
+                imported++;
+            }
+
+            change = new MirrorChange(replaced, removed, imported, Total(day) - before);
+            if (!apply || (replaced == 0 && removed == 0 && imported == 0)) return change;
+
+            Sort(day);
+            Persist(TimeRules.MonthKey(date));
+            snapshot = Snapshot(day);
+        }
+
+        if (snapshot is not null) Raise(date, snapshot);
+        return change;
+    }
+
+    /// <summary>Bornes locales d'un worklog, tronquées à la journée : l'application n'a pas de créneau à cheval.</summary>
+    private static (string Start, string End) Span(WorkLog log)
+    {
+        var from = TimeRules.MinuteOfDay(log.StartLocal);
+        var to = from + (log.Seconds + 59) / 60;
+        return (TimeRules.AsTime(from), TimeRules.AsTime(Math.Min(to, 24 * 60 - 1)));
+    }
+
+    /// <summary>Activité locale déduite du numéro : les tâches fixes se reconnaissent, le reste est du développement.</summary>
+    private static string ActivityFor(Profile profile, int workItem)
+    {
+        foreach (var pair in profile.FixedTasks)
+        {
+            if (pair.Value == workItem) return pair.Key;
+        }
+        return "ticket";
+    }
+
+    private static int Total(List<Entry> day)
+    {
+        var minutes = 0;
+        foreach (var entry in day) minutes += entry.EndMinutes - entry.StartMinutes;
+        return minutes * 60;
     }
 
     // ---------- mutation demandée par le suivi Git ----------

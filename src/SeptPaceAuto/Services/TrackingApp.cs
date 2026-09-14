@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -114,6 +115,13 @@ internal sealed class TrackingApp : ITrackingApp
 
             case "submitDay":
                 return await SubmitAsync(Text(parameters, "date"), ct).ConfigureAwait(false);
+
+            case "synchronize":
+                return await SynchronizeAsync(
+                    Text(parameters, "from"),
+                    Text(parameters, "to"),
+                    parameters.TryGetProperty("apply", out var applyFlag) && applyFlag.ValueKind == JsonValueKind.True,
+                    ct).ConfigureAwait(false);
 
             case "loadSettings":
             {
@@ -244,17 +252,193 @@ internal sealed class TrackingApp : ITrackingApp
     {
         var day = _days.Day(date);
         var outcome = await _sevenPace.SubmitAsync(date, day, ct).ConfigureAwait(false);
-        if (outcome.SentEntryIds.Count > 0)
+        if (outcome.Sent.Count > 0)
         {
-            _days.StampSent(date, outcome.SentEntryIds, DateTimeOffset.Now.ToString("o", CultureInfo.InvariantCulture));
+            _days.StampSent(
+                date,
+                outcome.Sent.ToDictionary(item => item.EntryId, item => item.WorkLogId),
+                DateTimeOffset.Now.ToString("o", CultureInfo.InvariantCulture));
         }
 
         return Write(new
         {
             ok = outcome.Ok,
-            sent = outcome.Sent.Select(group => new { workItem = group.WorkItem, seconds = group.Seconds }).ToArray(),
+            sent = outcome.Sent.Select(item => new { workItem = item.WorkItem, seconds = item.Seconds }).ToArray(),
             message = outcome.Message,
         });
+    }
+
+    // ---------- synchronisation avec 7pace ----------
+
+    /// <summary>Numéro de Bug tel que le suivi Git l'écrit dans le titre d'un créneau à attribuer.</summary>
+    private static readonly Regex BugInTitle = new(@"Bug #(\d{1,7})", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>Une seule remise à plat à la fois : deux relectures concurrentes se marcheraient dessus.</summary>
+    private int _syncing;
+
+    /// <summary>
+    /// Relit 7pace sur la plage et remet le miroir en conformité. <paramref name="apply"/> faux
+    /// rend les compteurs sans rien écrire : c'est ce que l'interface montre avant de demander
+    /// confirmation.
+    /// </summary>
+    private async Task<string> SynchronizeAsync(string from, string to, bool apply, CancellationToken ct)
+    {
+        if (Interlocked.Exchange(ref _syncing, 1) == 1)
+        {
+            return Write(new { ok = false, message = "Une synchronisation est déjà en cours." });
+        }
+        try
+        {
+            var reading = await _sevenPace.ReadAsync(from, to, ct).ConfigureAwait(false);
+            if (reading.Failure is not null)
+            {
+                // Relecture ratée : rien n'est écrasé ni supprimé, et Azure n'est pas relancé.
+                return Write(new { ok = false, message = reading.Failure });
+            }
+
+            var first = TimeRules.ParseDate(from);
+            var last = TimeRules.ParseDate(to);
+            if (last < first) (first, last) = (last, first);
+
+            var byDate = new Dictionary<string, List<WorkLog>>(StringComparer.Ordinal);
+            foreach (var log in reading.WorkLogs)
+            {
+                var day = log.StartLocal.Date;
+                if (day < first || day > last) continue;
+                var key = TimeRules.DateKey(day);
+                if (!byDate.TryGetValue(key, out var list)) byDate[key] = list = new List<WorkLog>();
+                list.Add(log);
+            }
+
+            // Les journées locales non vides comptent aussi : c'est là que se trouvent les
+            // créneaux envoyés dont 7pace n'a plus trace.
+            var dates = new SortedSet<string>(byDate.Keys, StringComparer.Ordinal);
+            foreach (var key in _days.Range(from, to).Keys) dates.Add(key);
+
+            var replaced = 0;
+            var removed = 0;
+            var imported = 0;
+            var delta = 0;
+            foreach (var date in dates)
+            {
+                var mirror = byDate.TryGetValue(date, out var logs) ? (IReadOnlyList<WorkLog>)logs : Array.Empty<WorkLog>();
+                var change = _days.Reconcile(date, mirror, apply);
+                replaced += change.Replaced;
+                removed += change.Removed;
+                imported += change.Imported;
+                delta += change.SecondsDelta;
+            }
+
+            if (apply) BeginAzureRefresh(from, to);
+
+            return Write(new
+            {
+                ok = true,
+                replaced,
+                removed,
+                imported,
+                secondsDelta = delta,
+                message = apply ? MirrorMessage(replaced, removed, imported) : null,
+            });
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _syncing, 0);
+        }
+    }
+
+    private static string MirrorMessage(int replaced, int removed, int imported)
+    {
+        if (replaced == 0 && removed == 0 && imported == 0) return "Rien à changer : le planning correspond déjà à 7pace.";
+
+        var parts = new List<string>();
+        Tally(parts, replaced, "remplacé");
+        Tally(parts, removed, "supprimé");
+        Tally(parts, imported, "importé");
+        return $"Miroir 7pace à jour : {string.Join(", ", parts)}.";
+
+        static void Tally(List<string> parts, int count, string adjective)
+        {
+            if (count == 0) return;
+            var plural = count > 1 ? "s" : string.Empty;
+            parts.Add(parts.Count == 0
+                ? $"{count} créneau{(count > 1 ? "x" : string.Empty)} {adjective}{plural}"
+                : $"{count} {adjective}{plural}");
+        }
+    }
+
+    /// <summary>
+    /// Relance la résolution Azure des créneaux brouillon restés à attribuer, cache ignoré.
+    /// En tâche de fond : jusqu'à 20 s par ticket, alors que le pont abandonne à 20 s.
+    /// </summary>
+    private void BeginAzureRefresh(string from, string to)
+    {
+        var token = _life?.Token ?? CancellationToken.None;
+        if (token.IsCancellationRequested) return;
+        _ = Task.Run(() => RefreshAzureAsync(from, to, token), CancellationToken.None);
+    }
+
+    private async Task RefreshAzureAsync(string from, string to, CancellationToken ct)
+    {
+        try
+        {
+            var targets = new Dictionary<int, List<(string Date, Entry Entry)>>();
+            foreach (var pair in _days.Range(from, to))
+            {
+                foreach (var entry in pair.Value)
+                {
+                    // Un créneau envoyé est un miroir de 7pace : Azure n'a rien à y changer.
+                    if (entry.SentAt is not null) continue;
+                    if (!string.Equals(entry.Activity, "unknown", StringComparison.Ordinal)) continue;
+                    if (!string.Equals(entry.Source, "git", StringComparison.Ordinal) && !string.Equals(entry.Source, "gap", StringComparison.Ordinal)) continue;
+
+                    var match = BugInTitle.Match(entry.Title ?? string.Empty);
+                    if (!match.Success || !int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var bug)) continue;
+                    if (!targets.TryGetValue(bug, out var list)) targets[bug] = list = new List<(string, Entry)>();
+                    list.Add((pair.Key, entry));
+                }
+            }
+            if (targets.Count == 0) return;
+
+            var resolved = 0;
+            var failed = 0;
+            foreach (var pair in targets)
+            {
+                if (ct.IsCancellationRequested) return;
+
+                var resolution = await _resolver.ResolveBugAsync(pair.Key, force: true, ct).ConfigureAwait(false);
+                if (!resolution.Resolved || resolution.WorkItem is not int item)
+                {
+                    failed++;
+                    continue;
+                }
+
+                var title = string.IsNullOrWhiteSpace(resolution.Title) ? $"Fix #{item}" : resolution.Title!;
+                foreach (var (date, entry) in pair.Value)
+                {
+                    // WriteTracked plutôt que Save : le créneau reste piloté par le suivi Git,
+                    // qui doit pouvoir continuer à prolonger sa fin.
+                    var written = _days.WriteTracked(date, entry.StartMinutes, entry.EndMinutes, "ticket", title, item, entry.Source, entry.Id);
+                    if (written is not null) resolved++;
+                }
+            }
+
+            Pushed?.Invoke("sync", Write(new { resolved, failed, message = AzureMessage(resolved, failed) }));
+        }
+        catch (OperationCanceledException)
+        {
+            // Fermeture en cours : rien à rapporter.
+        }
+    }
+
+    private static string AzureMessage(int resolved, int failed)
+    {
+        var done = resolved == 0
+            ? "aucune attribution complétée"
+            : $"{resolved} attribution{(resolved > 1 ? "s" : string.Empty)} complétée{(resolved > 1 ? "s" : string.Empty)}";
+        return failed == 0
+            ? $"Azure : {done}."
+            : $"Azure : {done}, {failed} toujours à faire.";
     }
 
     // ---------- mises à jour de l'application ----------

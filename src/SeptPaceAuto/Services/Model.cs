@@ -29,6 +29,9 @@ public sealed class Entry
     [JsonPropertyName("source")] public string Source { get; set; } = "manual";
     [JsonPropertyName("sentAt")] public string? SentAt { get; set; }
 
+    /// <summary>Identifiant du worklog 7pace, posé à l'envoi : c'est lui qui rend le miroir possible.</summary>
+    [JsonPropertyName("workLogId")] public string? WorkLogId { get; set; }
+
     [JsonIgnore] public int StartMinutes => TimeRules.Minutes(Start);
     [JsonIgnore] public int EndMinutes => TimeRules.Minutes(End);
     [JsonIgnore] public bool Excluded => string.Equals(Activity, "excluded", StringComparison.Ordinal);

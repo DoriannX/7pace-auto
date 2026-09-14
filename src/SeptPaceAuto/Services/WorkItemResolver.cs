@@ -131,45 +131,57 @@ public sealed class WorkItemResolver
     {
         var bug = ExtractBug(branch);
         if (bug is null) return new Resolution(null, null, null, false, "Aucun numéro de Bug ou de PBI dans le nom de la branche.");
+        return await ResolveBugAsync(bug.Value, force: false, ct).ConfigureAwait(false);
+    }
 
+    /// <summary>
+    /// Résolution d'un numéro connu. <paramref name="force"/> ignore le cache — y compris une
+    /// réponse déjà acquise : un Fix rattaché après coup doit pouvoir la remplacer sans
+    /// attendre la fenêtre de retente ni un redémarrage.
+    /// </summary>
+    public async Task<Resolution> ResolveBugAsync(int bug, bool force, CancellationToken ct)
+    {
         if (Organization() is null)
         {
             return new Resolution(bug, null, null, false, "L’organisation Azure DevOps n’est pas renseignée dans les réglages.");
         }
 
-        if (TryCache(bug.Value, out var cached)) return cached;
+        if (!force && TryCache(bug, out var cached)) return cached;
 
         var az = ProcessRunner.Az;
         if (az is null)
         {
-            Remember(bug.Value, null, null, null, resolved: false);
+            Remember(bug, null, null, null, resolved: false);
             return new Resolution(bug, null, null, false, "Azure CLI (az) est introuvable sur ce poste.");
         }
 
-        if (!await _oneAtATime.WaitAsync(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false))
+        // Une synchronisation manuelle a le droit de faire la queue derrière le suivi Git ;
+        // le relevé automatique, lui, ne doit jamais attendre.
+        var patience = force ? TimeSpan.FromSeconds(30) : TimeSpan.FromSeconds(1);
+        if (!await _oneAtATime.WaitAsync(patience, ct).ConfigureAwait(false))
         {
             return new Resolution(bug, null, null, false, "Résolution déjà en cours.");
         }
         try
         {
-            if (TryCache(bug.Value, out cached)) return cached;
+            if (!force && TryCache(bug, out cached)) return cached;
 
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
             deadline.CancelAfter(Budget);
             try
             {
-                return await LookupAsync(az, bug.Value, deadline.Token, ct).ConfigureAwait(false);
+                return await LookupAsync(az, bug, deadline.Token, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 const string reason = "Azure DevOps n’a pas répondu dans le temps imparti.";
-                Remember(bug.Value, null, null, null, resolved: false, transient: true, reason: reason);
+                Remember(bug, null, null, null, resolved: false, transient: true, reason: reason);
                 return new Resolution(bug, null, null, false, reason);
             }
             catch (Exception error) when (error is JsonException or InvalidOperationException)
             {
                 const string reason = "Réponse d’Azure DevOps inexploitable.";
-                Remember(bug.Value, null, null, null, resolved: false, transient: true, reason: reason);
+                Remember(bug, null, null, null, resolved: false, transient: true, reason: reason);
                 return new Resolution(bug, null, null, false, reason);
             }
         }

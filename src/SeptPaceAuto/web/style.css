@@ -548,6 +548,15 @@ body[data-loading] .time-block { pointer-events: none; }
 }
 .time-block.live.beat::before { animation: block-beat 220ms var(--ease) both; }
 @keyframes block-beat { 0% { opacity: .85; } 50% { opacity: .3; } 100% { opacity: .85; } }
+/* Chevauchement : un créneau relu de 7pace peut recouvrir un brouillon. Signalé par un
+   liseré hachuré, jamais corrigé d’office — c’est à l’utilisateur de trancher. */
+.time-block.overlap::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: repeating-linear-gradient(135deg, var(--amber) 0 3px, transparent 3px 6px);
+  opacity: .9; pointer-events: none;
+}
+/* Créneau qui déborde de l’axe affiché : ramené dans la grille, ses heures réelles en italique. */
+.time-block[data-clamped] .block-time { font-style: italic; }
 /* Le liseré de sélection ne doit pas être rogné par le défilement de la colonne. */
 .time-block:focus-visible { outline-offset: -2px; }
 

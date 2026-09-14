@@ -94,6 +94,9 @@ let tracking = { paused: false, branch: null, bug: null, workItem: null, title: 
 let elapsedSeconds = 0;
 let timerHandle = null;
 let sending = false;
+let syncing = false;
+/* Plage relue lors de l’aperçu : la confirmation doit porter sur exactement la même. */
+let syncRange = null;
 let confirmingDelete = false;
 let loadToken = 0;
 /* Réglages et mise à jour : l’hôte reste la référence, l’interface n’invente aucune valeur. */
@@ -646,6 +649,14 @@ function rangeBounds() {
   const bounds = [anchor, weekFirst, addDays(weekFirst, 6), monthFirst, addDays(monthFirst, 41), miniFirst, addDays(miniFirst, 41)];
   return [dateKey(new Date(Math.min(...bounds))), dateKey(new Date(Math.max(...bounds)))];
 }
+/* Plage réellement affichée, à la différence de rangeBounds qui couvre aussi le
+   calendrier surgissant : la synchronisation ne touche que ce que l’écran montre. */
+function periodBounds() {
+  if (period === 'day') return [selectedDay, selectedDay];
+  const anchor = asDate(selectedDay);
+  const first = period === 'month' ? startOfWeek(startOfMonth(anchor)) : startOfWeek(anchor);
+  return [dateKey(first), dateKey(addDays(first, period === 'month' ? 41 : 6))];
+}
 /* La réponse ne contient que les dates peuplées : les autres dates de l’intervalle sont vidées. */
 function applyRange(from, to, payload) {
   for (let date = asDate(from), last = asDate(to); date <= last; date = addDays(date, 1)) {
@@ -781,16 +792,25 @@ function createBlock({ sent }) {
   });
   return block;
 }
-function updateBlock(block, { entry, key, sent }, index, created) {
+function updateBlock(block, { entry, key, sent, overlap }, index, created) {
   blockData.set(block, { entry, key });
   block.dataset.entry = String(entry.id);
-  const top = Math.min(SPAN, Math.max(0, minutes(entry.start) - DAY_START));
-  const bottom = Math.min(SPAN, Math.max(0, minutes(entry.end) - DAY_START));
+  const from = minutes(entry.start);
+  const until = minutes(entry.end);
+  const top = Math.min(SPAN, Math.max(0, from - DAY_START));
+  const bottom = Math.min(SPAN, Math.max(0, until - DAY_START));
   const unassigned = isUnassigned(entry);
   const live = isLiveEntry(entry, key);
+  /* Un créneau venu de 7pace peut sortir de l’axe affiché : il est ramené dans la grille
+     et marqué, ses heures réelles restant lisibles dans l’info-bulle. */
+  const clamped = from < DAY_START || until > DAY_END;
+  const imported = entry.source === '7pace';
   block.classList.toggle('unknown', unassigned);
   block.classList.toggle('excluded', entry.activity === 'excluded');
   block.classList.toggle('live', live);
+  block.classList.toggle('overlap', Boolean(overlap));
+  if (clamped) block.dataset.clamped = 'true';
+  else delete block.dataset.clamped;
   block.style.top = atMinute(top);
   /* Un créneau très court garde une hauteur touchable, quelle que soit l’échelle. */
   block.style.height = `max(6px, ${atMinute(bottom - top)})`;
@@ -798,16 +818,18 @@ function updateBlock(block, { entry, key, sent }, index, created) {
   swapText(block.querySelector('.block-title'), blockTitle(entry));
   const detail = block.querySelector(sent ? '.block-sent' : '.block-detail');
   const shown = sent || detailIsActionable(entry);
-  if (shown) swapText(detail, sent ? 'Envoyé' : blockDetail(entry));
+  if (shown) swapText(detail, sent ? (imported ? '7pace' : 'Envoyé') : blockDetail(entry));
   reveal(detail, shown, { instant: created });
+  const chevauche = overlap ? ' · chevauche un autre créneau' : '';
   if (sent) {
-    block.title = `${entry.start} – ${entry.end} · ${blockTitle(entry)} · ${blockDetail(entry)} · envoyé dans 7pace le ${sentLabel(entry)} · non modifiable`;
-    block.setAttribute('aria-label', `Créneau de ${entry.start} à ${entry.end}, ${formatDuration(duration(entry))}, ${blockTitle(entry)}, ${blockDetail(entry)}, envoyé dans 7pace le ${sentLabel(entry)}, non modifiable, ${dayDate(asDate(key))}.`);
+    const origine = imported ? `saisi dans 7pace, relu le ${sentLabel(entry)}` : `envoyé dans 7pace le ${sentLabel(entry)}`;
+    block.title = `${entry.start} – ${entry.end} · ${blockTitle(entry)} · ${blockDetail(entry)} · ${origine} · non modifiable${chevauche}`;
+    block.setAttribute('aria-label', `Créneau de ${entry.start} à ${entry.end}, ${formatDuration(duration(entry))}, ${blockTitle(entry)}, ${blockDetail(entry)}, ${origine}, non modifiable${chevauche ? ', chevauche un autre créneau' : ''}, ${dayDate(asDate(key))}.`);
     return;
   }
   /* Le suivi en cours a son équivalent textuel : le bord accent n’est pas la seule information. */
-  block.title = `${entry.start} – ${entry.end} · ${blockTitle(entry)} · ${blockDetail(entry)}${live ? ' · en cours d’écriture par le suivi' : ''}`;
-  block.setAttribute('aria-label', `${unassigned ? 'Attribuer' : 'Modifier'} le créneau de ${entry.start} à ${entry.end}, ${formatDuration(duration(entry))}, ${blockTitle(entry)}, ${blockDetail(entry)}${live ? ', en cours d’écriture par le suivi' : ''}, ${dayDate(asDate(key))}.`);
+  block.title = `${entry.start} – ${entry.end} · ${blockTitle(entry)} · ${blockDetail(entry)}${live ? ' · en cours d’écriture par le suivi' : ''}${chevauche}`;
+  block.setAttribute('aria-label', `${unassigned ? 'Attribuer' : 'Modifier'} le créneau de ${entry.start} à ${entry.end}, ${formatDuration(duration(entry))}, ${blockTitle(entry)}, ${blockDetail(entry)}${live ? ', en cours d’écriture par le suivi' : ''}${chevauche ? ', chevauche un autre créneau' : ''}, ${dayDate(asDate(key))}.`);
 }
 /* Un créneau qui arrive entre toujours ; il n’est décalé de 25 ms que si la journée entière
    se repose, plafonné à 150 ms : la journée se pose, elle ne défile pas. */
@@ -817,10 +839,14 @@ function enterBlock(node, index) {
   node.classList.add('enter');
   setTimeout(() => node.classList.remove('enter'), 400);
 }
+/* Un créneau relu depuis 7pace peut recouvrir un brouillon : c’est signalé, jamais
+   corrigé d’office — 7pace décrit un fait, l’application ne déplace rien. */
+const overlapping = (entry, list) => list.some(other => other !== entry
+  && minutes(entry.start) < minutes(other.end) && minutes(entry.end) > minutes(other.start));
 /* L’état « envoyé » change la nature du nœud : il entre en place de l’ancien, il ne le mute pas. */
 const blockItems = (list, key) => chronological(list).map(entry => ({
   key: `${entry.id}:${isSent(entry) ? 'envoye' : 'ouvert'}`,
-  value: { entry, key, sent: isSent(entry) }
+  value: { entry, key, sent: isSent(entry), overlap: overlapping(entry, list) }
 }));
 const renderBlocks = (container, list, key) => reconcile(container, blockItems(list, key), {
   create: createBlock,
@@ -1531,7 +1557,12 @@ function render({ keepPreview = false } = {}) {
       : kept.length ? 'Tout est envoyé' : 'rien à envoyer pour l’instant');
   renderValidate({ remaining, toSend: toSend.length, kept: kept.length });
   if (keepPreview) { if (isPanelOpen($('#preview'))) renderPreview(); }
-  else revealAt('#preview', false);
+  else {
+    revealAt('#preview', false);
+    /* La confirmation de synchronisation porte sur une plage : changer de période l’invalide. */
+    revealAt('#sync', false);
+    syncRange = null;
+  }
   painted = { day: selectedDay, period, entries: count };
   refreshNowLine();
 }
@@ -2732,6 +2763,106 @@ $('#send-day').addEventListener('click', async () => {
   }
 });
 $('#close-preview').addEventListener('click', () => { revealAt('#preview', false); $('#validate').focus(); });
+/* Synchroniser : 7pace fait autorité sur ce qui a déjà été envoyé. La relecture précède
+   toujours l’écriture — les compteurs sont annoncés avant que rien ne bouge sur le disque. */
+function syncRows(response) {
+  const rows = [];
+  const line = (count, singular, plural) => { if (count > 0) rows.push([count > 1 ? plural : singular, String(count)]); };
+  line(Number(response?.replaced) || 0, 'Créneau remplacé', 'Créneaux remplacés');
+  line(Number(response?.removed) || 0, 'Créneau supprimé', 'Créneaux supprimés');
+  line(Number(response?.imported) || 0, 'Créneau importé', 'Créneaux importés');
+  const delta = Math.round((Number(response?.secondsDelta) || 0) / 60);
+  if (delta) rows.push(['Écart total', `${delta > 0 ? '+' : '−'}${formatDuration(Math.abs(delta))}`]);
+  return rows;
+}
+function renderSyncPreview(from, to, rows) {
+  swapTextAt('#sync-title', from === to ? `Synchroniser le ${dayDate(asDate(from))}` : 'Synchroniser avec 7pace');
+  swapTextAt('#sync-note', from === to
+    ? 'Les créneaux déjà envoyés seront remis à l’identique de 7pace. Les brouillons ne bougent pas.'
+    : `Du ${dayDate(asDate(from))} au ${dayDate(asDate(to))}. Les créneaux déjà envoyés seront remis à l’identique de 7pace ; les brouillons ne bougent pas.`);
+  $('#sync-content').replaceChildren(...rows.map(([label, value]) => {
+    const row = element('div', 'preview-item');
+    row.append(element('span', 'preview-label', label), element('strong', 'preview-value', value));
+    return row;
+  }));
+  swapTextAt('#sync-result', '');
+  $('#sync-result').classList.remove('good', 'error');
+}
+$('#synchronize').addEventListener('click', async () => {
+  const trigger = $('#synchronize');
+  if (syncing || isPending(trigger)) return;
+  const [from, to] = periodBounds();
+  syncing = true;
+  const done = pending(trigger);
+  announce('Relecture de 7pace en cours.');
+  try {
+    const response = await host.call('synchronize', { from, to, apply: false });
+    if (!response?.ok) {
+      const failure = typeof response?.message === 'string' && response.message.trim()
+        ? response.message.trim()
+        : 'La relecture de 7pace a échoué : rien n’a été modifié.';
+      setFeedback('#action-feedback', failure, 'error');
+      reportHostError(new Error(failure));
+      return;
+    }
+    clearHostError();
+    const rows = syncRows(response);
+    if (!rows.length) {
+      setFeedback('#action-feedback', 'Déjà à jour : rien à changer');
+      announce('Le planning correspond déjà à 7pace : rien à changer.');
+      return;
+    }
+    syncRange = [from, to];
+    renderSyncPreview(from, to, rows);
+    revealAt('#sync', true);
+    statusDetails.open = false;
+    $('#sync-title').focus();
+    announce('Relecture terminée. Rien n’est modifié avant confirmation.');
+  } catch (error) {
+    setFeedback('#action-feedback', 'Synchronisation impossible', 'error');
+    reportHostError(error);
+  } finally {
+    syncing = false;
+    done();
+  }
+});
+$('#sync-apply').addEventListener('click', async () => {
+  const commit = $('#sync-apply');
+  if (syncing || isPending(commit)) return;
+  const [from, to] = syncRange ?? periodBounds();
+  const result = $('#sync-result');
+  syncing = true;
+  const done = pending(commit, 'Remise à plat…');
+  swapText(result, '');
+  result.classList.remove('good', 'error');
+  try {
+    const response = await host.call('synchronize', { from, to, apply: true });
+    const message = typeof response?.message === 'string' && response.message.trim()
+      ? response.message.trim()
+      : response?.ok ? 'Planning aligné sur 7pace.' : 'La synchronisation a échoué : rien n’a été modifié.';
+    swapText(result, message);
+    result.classList.toggle('good', Boolean(response?.ok));
+    result.classList.toggle('error', !response?.ok);
+    setFeedback('#action-feedback', message, response?.ok ? 'good' : 'error');
+    announce(message);
+    if (response?.ok) {
+      clearHostError();
+      revealAt('#sync', false);
+      $('#synchronize').focus();
+    } else reportHostError(new Error(message));
+  } catch (error) {
+    swapText(result, hostErrorMessage(error));
+    result.classList.remove('good');
+    result.classList.add('error');
+    setFeedback('#action-feedback', 'Synchronisation impossible', 'error');
+    reportHostError(error);
+  } finally {
+    syncing = false;
+    done();
+    await loadVisible();
+  }
+});
+$('#close-sync').addEventListener('click', () => { revealAt('#sync', false); $('#synchronize').focus(); });
 $('#open-settings').addEventListener('click', () => openSettings(null));
 $('#onboard-back').addEventListener('click', () => goToStep(onboardIndex - 1, { direction: 'back' }));
 $('#onboard-skip').addEventListener('click', () => {
@@ -2899,6 +3030,9 @@ document.addEventListener('keydown', event => {
   } else if (isPanelOpen($('#preview'))) {
     revealAt('#preview', false);
     $('#validate').focus();
+  } else if (isPanelOpen($('#sync'))) {
+    revealAt('#sync', false);
+    $('#synchronize').focus();
   } else if (isMini()) return;
   else if (statusDetails.open) {
     statusDetails.open = false;
@@ -2918,6 +3052,14 @@ host.on('day', payload => {
   applyDay(payload);
   /* L’éditeur ouvert n’est pas refermé : seule la surface de planning est redessinée. */
   render({ keepPreview: true });
+});
+/* Volet Azure de la synchronisation : il arrive après la réponse, il n’interrompt rien. */
+host.on('sync', payload => {
+  const message = typeof payload?.message === 'string' && payload.message.trim() ? payload.message.trim() : '';
+  if (!message) return;
+  setFeedback('#action-feedback', message, Number(payload?.resolved) > 0 ? 'good' : 'error');
+  announce(message);
+  loadVisible();
 });
 /* Vérification de fond de l’hôte : elle n’interrompt rien, elle propose. */
 host.on('update', payload => {
