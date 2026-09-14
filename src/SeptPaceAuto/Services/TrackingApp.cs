@@ -130,6 +130,18 @@ internal sealed class TrackingApp : ITrackingApp
             case "saveSettings":
                 return await SaveSettingsAsync(parameters, ct).ConfigureAwait(false);
 
+            // Échelle de la vue jour : une préférence d'affichage, pas une saisie. Une
+            // valeur absente ou illisible vaut « pas de zoom » au lieu d'une erreur —
+            // l'utilisateur n'a rien à corriger dans un formulaire.
+            case "saveDayZoom":
+            {
+                var requested = parameters.TryGetProperty("dayHourPx", out var zoom)
+                    && zoom.ValueKind == JsonValueKind.Number
+                    && zoom.TryGetInt32(out var px) ? px : 0;
+                _profile = _profile.WithDayZoom(requested);
+                return Write(new { dayHourPx = _profile.Settings.DayHourPx });
+            }
+
             case "saveToken":
             {
                 if (!parameters.TryGetProperty("token", out var token) || token.ValueKind != JsonValueKind.String)

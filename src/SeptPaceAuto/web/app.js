@@ -448,6 +448,13 @@ function isLiveEntry(entry, key) {
    replace toute la grille, sans mise en page animée. */
 let hourPx = 0;
 let dayHourPx = 0;
+/* Zoom de la journée : l’échelle choisie par l’utilisateur, en pixels par heure, telle
+   que l’hôte l’a mémorisée. Zéro signifie « aucun zoom » — la journée est alors ajustée
+   à la hauteur disponible, comme avant le zoom. Cette préférence n’est jamais réécrite
+   par un redimensionnement : la fenêtre borne ce qui est affiché, pas ce qui est choisi. */
+let dayZoomPx = 0;
+/* Position de défilement de la journée, retenue le temps d’un aller-retour en semaine. */
+let dayScrollMemory = null;
 function surfaceInnerHeight() {
   const host = $('.surface-scroll');
   if (!host) return 0;
@@ -476,14 +483,26 @@ function applyTimelineScale() {
     root.setProperty('--hour', `${hourPx}px`);
     root.setProperty('--minute', `${hourPx / 60}px`);
     root.setProperty('--timeline', `${hourPx * HOURS}px`);
+    freezeNowLine();
   }
-  const day = Math.max(DAY_HOUR_MIN, Math.floor(inner / HOURS));
-  if (day !== dayHourPx) {
-    dayHourPx = day;
-    root.setProperty('--day-hour', `${dayHourPx}px`);
-    root.setProperty('--day-minute', `${dayHourPx / 60}px`);
-    root.setProperty('--day-timeline', `${dayHourPx * HOURS}px`);
-  }
+  writeDayScale(DayScale.effectiveZoom(dayZoomPx, DayScale.zoomBounds({ inner, hours: HOURS, floor: DAY_HOUR_MIN })));
+}
+/* Bornes du zoom, mesurées au moment où on en a besoin : le minimum est l’ajustement à
+   la fenêtre — au-dessous, la journée laisserait un vide sous 18:00. */
+function dayZoomBounds() {
+  return DayScale.zoomBounds({ inner: surfaceInnerHeight(), hours: HOURS, floor: DAY_HOUR_MIN });
+}
+/* Écrit l’échelle de la journée. Rien n’est repositionné : blocs, étiquettes, bandes et
+   filet de l’heure courante sont posés en multiples de --day-minute. */
+function writeDayScale(px) {
+  if (px === dayHourPx) return;
+  dayHourPx = px;
+  const root = document.documentElement.style;
+  root.setProperty('--day-hour', `${dayHourPx}px`);
+  root.setProperty('--day-minute', `${dayHourPx / 60}px`);
+  root.setProperty('--day-timeline', `${dayHourPx * HOURS}px`);
+  syncDayTicks();
+  freezeNowLine();
 }
 
 /* Pastille de la bascule de vue : mesurée, puis déplacée et étirée par transformation.
@@ -524,6 +543,19 @@ nowLine.setAttribute('aria-hidden', 'true');
 nowLine.append(element('span', 'now-time'));
 let nowLinePlace = null;
 const NOW_LINE_REFRESH = 30000;
+/* Un changement d’échelle — geste de zoom, réinitialisation, redimensionnement — n’est
+   pas un déplacement du filet : son instant ne bouge pas, seule sa conversion en pixels
+   change. Sa glissade de 220 ms, qui sert au temps qui passe, le ferait dériver derrière
+   l’axe pendant tout le geste ; elle est donc suspendue le temps du changement. Le
+   rétablissement passe par une minuterie, pas par requestAnimationFrame : celui-ci
+   s’exécute avant la peinture de l’image en cours, et la transition reprendrait la main
+   sur le changement qu’on vient d’écrire. */
+let nowLineGlide = null;
+function freezeNowLine() {
+  nowLine.style.transition = 'none';
+  clearTimeout(nowLineGlide);
+  nowLineGlide = setTimeout(() => { nowLine.style.transition = ''; }, 60);
+}
 function placeNowLine(container) {
   const value = nowMinutes();
   if (!container || value < DAY_START || value > DAY_END) {
@@ -688,13 +720,35 @@ function openFirstUnassigned() {
 
 /* ---------- planning ---------- */
 
-/* L’axe horaire n’est posé qu’une fois : ses étiquettes ne changent jamais. */
+/* Axe horaire de la semaine : posé une fois, une étiquette par heure — sept colonnes
+   n’ont pas la place d’en montrer plus, et leur échelle ne se règle pas. */
 function addTimeLabels(container) {
   if (container.querySelector('.time-label')) return;
   for (let value = DAY_START; value < DAY_END; value += 60) {
     const label = element('span', 'time-label', `${value / 60} h`);
     label.style.top = atMinute(value - DAY_START);
     container.append(label);
+  }
+}
+/* La journée, elle, se relit à chaque échelle : au-delà d’un certain zoom, une étiquette
+   par heure laisse l’œil sans repère entre deux filets. Le pas est le plus fin qui garde
+   28 px entre deux étiquettes, et les étiquettes ne sont reconstruites que lorsqu’il
+   change — un geste de zoom continu ne redessine pas l’axe à chaque pixel. */
+function syncDayTicks() {
+  const grid = $('.day-grid');
+  if (!grid) return;
+  const step = DayScale.tickStep(dayHourPx);
+  if (grid.dataset.tick === String(step)) return;
+  grid.dataset.tick = String(step);
+  grid.style.setProperty('--day-tick', `calc(var(--minute) * ${step})`);
+  for (const node of grid.querySelectorAll('.time-label')) node.remove();
+  for (let value = DAY_START; value < DAY_END; value += step) {
+    const onHour = value % 60 === 0;
+    /* Entre les heures, les minutes seules : l’axe n’a que 46 px de large. */
+    const label = element('span', onHour ? 'time-label' : 'time-label minor',
+      onHour ? `${value / 60} h` : String(value % 60).padStart(2, '0'));
+    label.style.top = atMinute(value - DAY_START);
+    grid.append(label);
   }
 }
 function blockTitle(entry) {
@@ -913,13 +967,17 @@ function dayScaffold() {
   const timeline = element('section', 'day-timeline');
   timeline.setAttribute('aria-label', 'Journée heure par heure');
   const grid = element('div', 'day-grid');
-  addTimeLabels(grid);
+  const readout = element('p', 'day-zoom-readout');
+  readout.setAttribute('aria-hidden', 'true');
+  readout.hidden = true;
   const offs = element('div', 'day-offs');
   offs.setAttribute('aria-hidden', 'true');
   const empty = element('p', 'empty-day', 'Aucun créneau ici : le suivi en ajoutera au fil de la journée, ou ajoute-en un à la main.');
   empty.hidden = true;
   grid.append(offs, element('div', 'day-blocks'), empty);
-  timeline.append(grid);
+  /* La surimpression du zoom est posée en haut de la colonne, pas sous le curseur :
+     collée au haut de la vue, elle se lit sans que le regard quitte l’axe. */
+  timeline.append(readout, grid);
 
   const rail = element('aside', 'day-rail');
   rail.setAttribute('aria-label', 'Synthèse de la journée');
@@ -941,7 +999,160 @@ function dayScaffold() {
 
   view.append(timeline, rail);
   view.dataset.ready = 'true';
+  /* L’axe est posé une fois la grille dans la page : le pas dépend de l’échelle courante. */
+  syncDayTicks();
+  bindDayZoom(timeline, readout);
   return view;
+}
+
+/* Zoom de la journée : Ctrl + glisser vertical sur la colonne horaire, blocs compris.
+   Monter agrandit, descendre réduit, sans palier — et l’instant saisi au départ reste
+   sous le curseur : c’est lui l’ancre, pas le centre de la vue ni l’heure courante.
+   Le rail de synthèse est hors du geste : on ne zoome pas sur une liste. */
+let zoomDrag = null;
+function bindDayZoom(timeline, readout) {
+  timeline.addEventListener('pointerdown', event => {
+    if (isMini() || !event.ctrlKey || event.button !== 0 || event.pointerType === 'touch') return;
+    const scroller = $('.surface-scroll');
+    const grid = timeline.querySelector('.day-grid');
+    if (!scroller || !grid || !dayHourPx) return;
+    const gridRect = grid.getBoundingClientRect();
+    const scrollRect = scroller.getBoundingClientRect();
+    zoomDrag = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startPx: dayHourPx,
+      px: dayHourPx,
+      /* Haut de la grille dans le contenu défilant : il ne bouge pas quand l’échelle
+         change — seule la hauteur de la grille change. */
+      gridOffset: gridRect.top - scrollRect.top + scroller.scrollTop,
+      anchorMinutes: (event.clientY - gridRect.top) / (dayHourPx / 60),
+      viewportY: event.clientY - scrollRect.top,
+      moved: false
+    };
+    /* Pas de capture ici : la capture retarge aussi le clic de compatibilité, et un
+       Ctrl+clic immobile n’ouvrirait plus le créneau. Elle est prise au franchissement
+       du seuil, quand le geste est devenu un zoom. */
+  });
+
+  timeline.addEventListener('pointermove', event => {
+    if (!zoomDrag || event.pointerId !== zoomDrag.pointerId) return;
+    const dy = event.clientY - zoomDrag.startY;
+    /* Sous 3 px, c’est encore un clic : Ctrl+clic immobile ouvre le créneau, comme sans Ctrl. */
+    if (!zoomDrag.moved && Math.abs(dy) < 3) return;
+    if (!zoomDrag.moved) {
+      zoomDrag.moved = true;
+      document.body.dataset.zooming = 'true';
+      /* Pointeur capturé : sortir de la grille, ou même de la fenêtre, ne coupe pas le geste. */
+      timeline.setPointerCapture(event.pointerId);
+    }
+    zoomDrag.px = DayScale.effectiveZoom(DayScale.zoomFromDrag(zoomDrag.startPx, dy), dayZoomBounds());
+    writeDayScale(zoomDrag.px);
+    const scroller = $('.surface-scroll');
+    scroller.scrollTop = DayScale.anchoredScrollTop({
+      gridOffset: zoomDrag.gridOffset,
+      anchorMinutes: zoomDrag.anchorMinutes,
+      viewportY: zoomDrag.viewportY,
+      hourPx: zoomDrag.px,
+      maxScroll: scroller.scrollHeight - scroller.clientHeight
+    });
+    showZoomReadout(readout, timeline);
+    event.preventDefault();
+  });
+
+  const finish = event => {
+    if (!zoomDrag || event.pointerId !== zoomDrag.pointerId) return;
+    const { moved, px } = zoomDrag;
+    zoomDrag = null;
+    delete document.body.dataset.zooming;
+    if (!moved) return;
+    /* Geste ramené jusqu’à l’ajustement à la fenêtre : c’est le défaut, et c’est lui
+       qu’on mémorise — sinon l’échelle resterait figée à la taille actuelle de la
+       fenêtre et le bouton de réinitialisation resterait offert sans rien à faire. */
+    dayZoomPx = px <= dayZoomBounds().min ? 0 : px;
+    saveDayZoom(dayZoomPx);
+    syncZoomReset();
+    hideZoomReadout(readout);
+    swallowNextClick();
+  };
+  timeline.addEventListener('pointerup', finish);
+  timeline.addEventListener('pointercancel', finish);
+}
+
+/* Ce que le geste vient de produire, dit en clair : l’amplitude visible. La
+   surimpression tient le haut de la colonne — elle ne suit pas le curseur, qui a déjà
+   l’axe et les blocs à regarder — et s’efface une seconde après la fin du geste. */
+let readoutTimer = null;
+function showZoomReadout(readout, timeline) {
+  const scroller = $('.surface-scroll');
+  if (!scroller) return;
+  /* Écrit sans animation de remplacement : la valeur change à chaque pixel du geste. */
+  readout.textContent = `${formatDuration(DayScale.visibleMinutes(scroller.clientHeight, dayHourPx))} visible`;
+  /* Posée au bord haut de ce qui est visible, quelle que soit la position de défilement. */
+  const y = scroller.getBoundingClientRect().top - timeline.getBoundingClientRect().top;
+  readout.style.top = `${Math.max(0, y) + 8}px`;
+  clearTimeout(readoutTimer);
+  reveal(readout, true, { instant: true });
+}
+function hideZoomReadout(readout) {
+  clearTimeout(readoutTimer);
+  readoutTimer = setTimeout(() => reveal(readout, false), 1000);
+}
+
+/* Le relâchement produit un clic, qui ouvrirait l’éditeur du créneau resté sous le
+   curseur : il est avalé. Le clic de synthèse arrive avant le prochain tour de boucle,
+   donc l’écouteur ne survit jamais au geste. */
+function swallowNextClick() {
+  const swallow = event => { event.stopPropagation(); event.preventDefault(); };
+  document.addEventListener('click', swallow, { capture: true, once: true });
+  setTimeout(() => document.removeEventListener('click', swallow, { capture: true }), 0);
+}
+
+/* L’échelle choisie est tenue par l’hôte, avec les autres réglages : la page n’écrit
+   rien elle-même. L’enregistrement attend 400 ms — un geste continu n’en produit qu’un. */
+let zoomSaveTimer = null;
+function saveDayZoom(px) {
+  /* Le formulaire de réglages repart de settingsState : sans cette mise à jour, un
+     enregistrement ultérieur des réglages renverrait l’ancienne échelle. */
+  if (settingsState) settingsState.dayHourPx = px;
+  clearTimeout(zoomSaveTimer);
+  zoomSaveTimer = setTimeout(() => {
+    host.call('saveDayZoom', { dayHourPx: px }).then(clearHostError, reportHostError);
+  }, 400);
+}
+/* Retour à l’échelle par défaut : le bouton n’existe que lorsqu’il a quelque chose à faire. */
+function syncZoomReset() {
+  reveal($('#reset-zoom'), planningTarget() === 'day' && dayZoomPx > 0);
+}
+/* Première ouverture de la journée : l’heure courante au centre. Hors 08:00–18:00, en haut. */
+function scrollDayToNow() {
+  const scroller = $('.surface-scroll');
+  const grid = $('.day-grid');
+  if (!scroller || !grid) return;
+  const max = scroller.scrollHeight - scroller.clientHeight;
+  if (max <= 0) return;
+  const value = nowMinutes();
+  if (value < DAY_START || value > DAY_END) { scroller.scrollTop = 0; return; }
+  const gridOffset = grid.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+  const offset = gridOffset + (value - DAY_START) * (dayHourPx / 60);
+  scroller.scrollTop = Math.min(max, Math.max(0, offset - scroller.clientHeight / 2));
+}
+/* Le défilement de la journée n’est pas rejoué à chaque rendu : changer de journée garde
+   la même fenêtre horaire sous les yeux, ce qui permet de comparer deux journées au même
+   endroit. Seule l’arrivée en vue jour le règle — la position retenue en la quittant, ou
+   l’heure courante à la toute première ouverture. */
+let paintedTarget = null;
+function syncDayScroll() {
+  const target = planningTarget();
+  const scroller = $('.surface-scroll');
+  if (!scroller || target === paintedTarget) { paintedTarget = target; return; }
+  if (paintedTarget === 'day') dayScrollMemory = scroller.scrollTop;
+  if (target === 'day') {
+    if (dayScrollMemory === null) scrollDayToNow();
+    /* La hauteur est relue avant d’écrire : la surface vient d’être posée. */
+    else scroller.scrollTop = Math.min(dayScrollMemory, Math.max(0, scroller.scrollHeight - scroller.clientHeight));
+  }
+  paintedTarget = target;
 }
 function renderRail(view) {
   const kept = included(entries);
@@ -1306,6 +1517,8 @@ function render({ keepPreview = false } = {}) {
   renderChrome();
   renderMini();
   syncSurface();
+  syncZoomReset();
+  syncDayScroll();
   const kept = included(entries);
   const toSend = sendable(entries);
   const total = kept.reduce((sum, entry) => sum + duration(entry), 0);
@@ -1533,6 +1746,10 @@ function applySettings(settings) {
   }
   if (Array.isArray(next.lunch) && next.lunch.length === 2) LUNCH = [Number(next.lunch[0]), Number(next.lunch[1])];
   if (typeof next.onboarded === 'boolean') onboarded = next.onboarded;
+  /* Échelle de la journée : l’hôte est la référence, l’interface n’en invente aucune.
+     Une valeur absente ou aberrante retombe sur l’ajustement à la fenêtre, sans un mot. */
+  dayZoomPx = DayScale.storedZoom(next.dayHourPx);
+  applyTimelineScale();
   applyActivities(next.activities);
   renderTarget();
 }
@@ -2352,6 +2569,17 @@ for (const [selector, direction] of [['#mini-prev-month', -1], ['#mini-next-mont
     announce(`Mini-calendrier sur ${miniMonth.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}. La journée affichée n’a pas changé.`);
   });
 }
+/* Retour à l’échelle par défaut : la journée retrouve la hauteur de la fenêtre, et le
+   regard l’heure courante — sinon on resterait perdu au milieu d’un axe qui vient de
+   changer d’échelle. */
+$('#reset-zoom').addEventListener('click', () => {
+  dayZoomPx = 0;
+  applyTimelineScale();
+  saveDayZoom(0);
+  syncZoomReset();
+  scrollDayToNow();
+  announce('Zoom de la journée réinitialisé : la journée entière est visible.');
+});
 $('#add').addEventListener('click', () => openEditor(null));
 $('#cancel-editor').addEventListener('click', closeEditor);
 form.elements.activity.addEventListener('change', () => { form.elements.workItem.value = ''; updateWorkItemField(); });

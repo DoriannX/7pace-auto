@@ -41,6 +41,13 @@ public sealed class AppSettings
     [JsonPropertyName("checkUpdates")] public bool CheckUpdates { get; set; } = true;
 
     /// <summary>
+    /// Échelle choisie pour la vue jour, en pixels par heure. Zéro signifie « aucun zoom
+    /// mémorisé » : la journée est alors ajustée à la hauteur de la fenêtre. Ce n'est pas
+    /// une saisie — l'interface l'écrit seule, après un geste de zoom.
+    /// </summary>
+    [JsonPropertyName("dayHourPx")] public int DayHourPx { get; set; }
+
+    /// <summary>
     /// La prise en main a été menée jusqu'au bout. Faux tant que l'utilisateur ne l'a pas
     /// terminée : c'est ce qui décide de l'afficher au démarrage.
     /// </summary>
@@ -179,6 +186,19 @@ public sealed class Profile
         return profile;
     }
 
+    /// <summary>
+    /// Mémorise l'échelle de la vue jour. Cette préférence n'est pas une saisie : une
+    /// valeur aberrante est réparée plutôt que refusée, et un fichier non inscriptible
+    /// n'échoue pas — le zoom vaut moins qu'un démarrage.
+    /// </summary>
+    public Profile WithDayZoom(int dayHourPx)
+    {
+        var next = Create(Settings, strict: false);
+        next.Settings.DayHourPx = DayZoom(dayHourPx);
+        TrySave(next);
+        return next;
+    }
+
     private static void TrySave(Profile profile)
     {
         try
@@ -209,6 +229,7 @@ public sealed class Profile
             UpdateRepository = Repository(source.UpdateRepository, strict),
             CheckUpdates = source.CheckUpdates,
             Onboarded = source.Onboarded,
+            DayHourPx = DayZoom(source.DayHourPx),
         };
 
         var windows = Windows(source.WorkWindows, strict);
@@ -269,6 +290,14 @@ public sealed class Profile
         if (strict) throw new DomainException("L’intervalle de relevé doit être compris entre 10 et 300 secondes.");
         return new AppSettings().PollSeconds;
     }
+
+    /// <summary>
+    /// Échelle de la vue jour : bornée aux limites du geste de zoom (36 à 600 px par
+    /// heure), zéro valant « pas de zoom mémorisé ». Jamais de refus, dans les deux
+    /// modes : la valeur ne vient pas d'un formulaire, elle ne doit pas empêcher un
+    /// enregistrement de réglages.
+    /// </summary>
+    private static int DayZoom(int raw) => raw <= 0 ? 0 : Math.Clamp(raw, 36, 600);
 
     private static string Organization(string? raw, bool strict)
     {

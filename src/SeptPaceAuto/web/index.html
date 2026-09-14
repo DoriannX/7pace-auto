@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>7pace auto — Planning</title>
 <link rel="stylesheet" href="style.css">
+<script src="scale.js" defer></script>
 <script src="app.js" defer></script>
 </head>
 <body data-view="full">
@@ -27,6 +28,7 @@
       <button type="button" id="previous-period" class="icon-button" aria-label="Période précédente" title="Période précédente"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg></button>
       <button type="button" id="next-period" class="icon-button" aria-label="Période suivante" title="Période suivante"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg></button>
       <h1 id="period-label" class="period-label"></h1>
+      <button type="button" id="reset-zoom" class="icon-button" hidden aria-label="Réinitialiser le zoom de la journée" title="Réinitialiser le zoom de la journée"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.6V5h2.4"/></svg></button>
     </div>
     <!-- Calendrier du mois : panneau surgissant ancré sous le champ de date.
          Divulgation portée par un bouton : <details> n’est pas activable par l’automatisation Windows. -->

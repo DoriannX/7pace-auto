@@ -586,19 +586,25 @@ body[data-loading] .time-block { pointer-events: none; }
   display: flex; align-items: stretch; gap: 20px;
   width: 100%; min-width: 0;
 }
-.day-timeline { flex: 1 1 auto; min-width: 320px; }
+/* Le filet qui sépare les deux volets est porté par la colonne horaire, pas par le rail :
+   c’est elle qui est haute, et elle le reste quand le rail se colle en haut de la vue. */
+.day-timeline { flex: 1 1 auto; min-width: 320px; position: relative; border-right: 1px solid var(--hairline); }
 .day-grid {
   /* L’échelle de la journée est locale : tout ce qui se pose sur cet axe — libellés
      d’heure, bandes, blocs, filet de l’heure courante — s’exprime en var(--minute). */
   --hour: var(--day-hour); --minute: var(--day-minute); --timeline: var(--day-timeline);
   --axis: 46px;
+  /* Pas des filets intermédiaires : réglé en JS sur le pas des étiquettes. Par défaut il
+     vaut l’heure, donc il se confond avec les filets d’heure et ne se voit pas. */
+  --day-tick: var(--hour);
   position: relative; height: var(--timeline);
   background-image:
     linear-gradient(to bottom, var(--grid-hour) 0 1px, transparent 1px),
     repeating-linear-gradient(to bottom, var(--grid-hour) 0 1px, transparent 1px var(--hour)),
+    repeating-linear-gradient(to bottom, var(--grid-half) 0 1px, transparent 1px var(--day-tick)),
     linear-gradient(to right, var(--grid-axis) 0 1px, transparent 1px);
-  background-position: var(--axis) bottom, var(--axis) 0, var(--axis) 0;
-  background-size: calc(100% - var(--axis)) 1px, calc(100% - var(--axis)) 100%, 1px 100%;
+  background-position: var(--axis) bottom, var(--axis) 0, var(--axis) 0, var(--axis) 0;
+  background-size: calc(100% - var(--axis)) 1px, calc(100% - var(--axis)) 100%, calc(100% - var(--axis)) 100%, 1px 100%;
   background-repeat: no-repeat;
 }
 .day-offs, .day-blocks { position: absolute; inset: 0 0 0 var(--axis); }
@@ -616,6 +622,23 @@ body[data-loading] .time-block { pointer-events: none; }
 }
 .day-off-label:empty { display: none; }
 .day-blocks > .time-block { left: 6px; right: 6px; }
+/* Étiquettes intermédiaires, entre deux heures : les minutes seules, en retrait, pour que
+   l’heure reste le repère principal à toutes les échelles. */
+.time-label.minor { font-size: var(--t-micro); color: var(--grid-axis); }
+/* Pendant le geste de zoom, la colonne ne réagit plus au survol ni au clic : ni éditeur
+   ouvert par mégarde, ni surlignage qui clignote, ni sélection de texte. */
+body[data-zooming] { cursor: ns-resize; user-select: none; }
+body[data-zooming] .time-block { pointer-events: none; }
+/* Ce que le zoom vient de donner à voir, posé en haut à droite de la colonne : tenu au
+   bord haut de la vue pendant tout le geste, jamais sous le curseur. Hors flux, pour que
+   l’axe ne bouge pas d’un pixel quand la surimpression apparaît. */
+.day-zoom-readout {
+  position: absolute; top: 0; right: 8px; z-index: 4;
+  padding: 2px 6px; border: 1px solid var(--hairline); border-radius: 4px;
+  background: var(--surface); color: var(--ink);
+  font-size: var(--t-small); font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
 
 /* Le bloc de la journée : titre d’abord, plage ensuite, pastille de durée en bas à
    droite. Les interlignes sont tenus au pixel — 15 px le titre, 13 px la plage et le
@@ -670,12 +693,14 @@ body[data-loading] .time-block { pointer-events: none; }
 }
 
 /* Rail de synthèse : pas de carte, des filets. Largeur fixe et confortable, collée au
-   bord droit de la surface, et son filet court sur toute la hauteur — c’est lui qui
-   sépare les deux volets. */
+   bord droit de la surface ; le filet qui le sépare de la colonne appartient à celle-ci. */
 .day-rail {
   flex: 0 0 clamp(300px, 26cqw, 360px); min-width: 0;
   display: flex; flex-direction: column; gap: 14px;
-  padding-left: 20px; border-left: 1px solid var(--hairline);
+  padding-left: 20px;
+  /* La journée zoomée est plus haute que la fenêtre : la synthèse reste sous les yeux
+     au lieu de défiler avec l’axe. */
+  position: sticky; top: 0; align-self: flex-start;
 }
 .rail-total { display: flex; flex-direction: column; gap: 4px; }
 .rail-figure { display: flex; align-items: baseline; gap: 6px; font-variant-numeric: tabular-nums; }
@@ -1151,7 +1176,9 @@ body[data-handover] .app { animation: shell-out 160ms var(--ease) both; }
 @container planning (max-width: 684px) {
   #entries-list { flex-direction: column; align-items: stretch; gap: 14px; }
   .day-timeline, .day-rail { flex: 0 0 auto; width: 100%; min-width: 0; }
-  .day-rail { padding: 14px 0 0; border-left: 0; border-top: 1px solid var(--hairline); }
+  .day-timeline { border-right: 0; }
+  /* Empilés, les deux volets défilent ensemble : plus rien à coller. */
+  .day-rail { padding: 14px 0 0; border-top: 1px solid var(--hairline); position: static; }
 }
 /* Dernier repli, sous la largeur minimale de la fenêtre : l’état du suivi se lit sur la
    pastille et l’infobulle, et reste dans l’arbre d’accessibilité. */
