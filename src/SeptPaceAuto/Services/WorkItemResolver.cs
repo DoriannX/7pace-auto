@@ -29,6 +29,9 @@ internal sealed class WorkItemCacheRow
 
     /// <summary>Échec passager (az lent, jeton en cours de renouvellement) : à retenter vite.</summary>
     [JsonPropertyName("transient")] public bool Transient { get; set; }
+
+    /// <summary>Cause du dernier échec, conservée pour pouvoir diagnostiquer une non-attribution.</summary>
+    [JsonPropertyName("reason")] public string? Reason { get; set; }
 }
 
 /// <summary>
@@ -38,7 +41,15 @@ internal sealed class WorkItemCacheRow
 public sealed class WorkItemResolver
 {
     private static readonly Regex Number = new(@"(?<!\d)(\d{4,6})(?!\d)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
-    private static readonly TimeSpan Budget = TimeSpan.FromSeconds(20);
+
+    /// <summary>Délai d'un appel az isolé.</summary>
+    private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// Temps total accordé à une résolution : le parent, chaque enfant et le compte connecté
+    /// font autant d'appels az. La résolution tourne en fond, elle ne retient jamais le chrono.
+    /// </summary>
+    private static readonly TimeSpan Budget = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan RetryAfterFailure = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan RetryAfterHiccup = TimeSpan.FromMinutes(2);
     private const string ChildLink = "System.LinkTypes.Hierarchy-Forward";
@@ -54,6 +65,11 @@ public sealed class WorkItemResolver
     private readonly SemaphoreSlim _oneAtATime = new(1, 1);
     private readonly Func<string> _organization;
     private readonly string _cachePath;
+
+    // Lu sous _oneAtATime : une seule résolution interroge az à la fois.
+    private string? _identity;
+    private bool _identityRead;
+    private string? _lastAzError;
 
     /// <param name="organization">Organisation Azure DevOps réglée par l'utilisateur, relue à chaque appel.</param>
     public WorkItemResolver(Func<string> organization) : this(organization, AppPaths.WorkItems) { }
@@ -146,13 +162,15 @@ public sealed class WorkItemResolver
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                Remember(bug.Value, null, null, null, resolved: false, transient: true);
-                return new Resolution(bug, null, null, false, "Azure DevOps n’a pas répondu en 20 secondes.");
+                const string reason = "Azure DevOps n’a pas répondu dans le temps imparti.";
+                Remember(bug.Value, null, null, null, resolved: false, transient: true, reason: reason);
+                return new Resolution(bug, null, null, false, reason);
             }
             catch (Exception error) when (error is JsonException or InvalidOperationException)
             {
-                Remember(bug.Value, null, null, null, resolved: false, transient: true);
-                return new Resolution(bug, null, null, false, "Réponse d’Azure DevOps inexploitable.");
+                const string reason = "Réponse d’Azure DevOps inexploitable.";
+                Remember(bug.Value, null, null, null, resolved: false, transient: true, reason: reason);
+                return new Resolution(bug, null, null, false, reason);
             }
         }
         finally
@@ -166,10 +184,10 @@ public sealed class WorkItemResolver
         var parent = await ShowAsync(az, bug, ct).ConfigureAwait(false);
         if (parent is null)
         {
-            return Failed(bug, shutdown, ct, $"Le work item #{bug} n’a pas pu être lu.", transient: true);
+            return Failed(bug, shutdown, ct, $"Le work item #{bug} n’a pas pu être lu : {_lastAzError ?? "az n’a rien renvoyé"}.", transient: true);
         }
 
-        var candidates = new List<(int Id, string Type, string? Title)>();
+        var candidates = new List<(int Id, string Type, string? Title, string? Assignee)>();
         using (parent)
         {
             foreach (var child in Children(parent.RootElement))
@@ -177,7 +195,7 @@ public sealed class WorkItemResolver
                 ct.ThrowIfCancellationRequested();
                 using var detail = await ShowAsync(az, child, ct).ConfigureAwait(false);
                 if (detail is null) continue;
-                var (type, title) = Fields(detail.RootElement);
+                var (type, title, assignee) = Fields(detail.RootElement);
                 if (type is null) continue;
 
                 // Un Fix tranche tout de suite : c'est l'élément d'imputation par convention.
@@ -186,13 +204,28 @@ public sealed class WorkItemResolver
                     Remember(bug, child, title, type, resolved: true);
                     return new Resolution(bug, child, title, true, null);
                 }
-                candidates.Add((child, type, title));
+                candidates.Add((child, type, title, assignee));
             }
         }
 
         // Sans Fix, l'équipe impute sur la tâche enfant — mais seulement s'il n'y a pas de
         // doute : plusieurs tâches, c'est à l'utilisateur de choisir, pas à l'application.
         var tasks = candidates.Where(candidate => Imputable.Contains(candidate.Type)).ToList();
+
+        // Un parent partagé (Roadmap, PBI) porte souvent une tâche par développeur. Une seule
+        // porte le compte connecté à az : c'est la sienne, pas une supposition.
+        if (tasks.Count > 1)
+        {
+            var identity = await IdentityAsync(az, ct).ConfigureAwait(false);
+            if (identity is not null)
+            {
+                var mine = tasks
+                    .Where(candidate => string.Equals(candidate.Assignee, identity, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (mine.Count == 1) tasks = mine;
+            }
+        }
+
         if (tasks.Count == 1)
         {
             Remember(bug, tasks[0].Id, tasks[0].Title, tasks[0].Type, resolved: true);
@@ -200,7 +233,7 @@ public sealed class WorkItemResolver
         }
 
         return Failed(bug, shutdown, ct, tasks.Count > 1
-            ? $"Plusieurs tâches enfants sous #{bug} : l’attribution reste à faire à la main."
+            ? $"Plusieurs tâches enfants sous #{bug} pour le même compte : l’attribution reste à faire à la main."
             : $"Aucun Fix ni tâche enfant sous #{bug}.");
     }
 
@@ -212,10 +245,9 @@ public sealed class WorkItemResolver
     private Resolution Failed(int bug, CancellationToken shutdown, CancellationToken deadline, string reason, bool transient = false)
     {
         if (shutdown.IsCancellationRequested) return new Resolution(bug, null, null, false, "Résolution interrompue.");
-        Remember(bug, null, null, null, resolved: false, transient: transient || deadline.IsCancellationRequested);
-        return new Resolution(bug, null, null, false, deadline.IsCancellationRequested
-            ? "Azure DevOps n’a pas répondu en 20 secondes."
-            : reason);
+        var message = deadline.IsCancellationRequested ? "Azure DevOps n’a pas répondu dans le temps imparti." : reason;
+        Remember(bug, null, null, null, resolved: false, transient: transient || deadline.IsCancellationRequested, reason: message);
+        return new Resolution(bug, null, null, false, message);
     }
 
     /// <summary>Organisation réglée, ou null quand elle est vide : aucune interrogation n'est alors tentée.</summary>
@@ -233,18 +265,33 @@ public sealed class WorkItemResolver
         var result = await ProcessRunner.RunAsync(
             az,
             new[] { "boards", "work-item", "show", "--id", id.ToString(CultureInfo.InvariantCulture), "--organization", organization, "--output", "json" },
-            Budget,
+            CallTimeout,
             ct).ConfigureAwait(false);
 
-        if (!result.Ok || string.IsNullOrWhiteSpace(result.StdOut)) return null;
+        if (!result.Ok || string.IsNullOrWhiteSpace(result.StdOut))
+        {
+            _lastAzError = Detail(result);
+            return null;
+        }
         try
         {
             return JsonDocument.Parse(result.StdOut);
         }
         catch (JsonException)
         {
+            _lastAzError = "réponse JSON illisible";
             return null;
         }
+    }
+
+    /// <summary>Résumé lisible d'un appel az manqué : de quoi comprendre sans relancer la commande.</summary>
+    private static string Detail(ProcessResult result)
+    {
+        if (!result.Started) return "az n’a pas pu être lancé";
+        if (result.TimedOut) return "az a dépassé le délai";
+        var error = result.StdErr.Trim().Replace('\r', ' ').Replace('\n', ' ');
+        if (error.Length > 200) error = error[..200];
+        return error.Length > 0 ? $"code {result.ExitCode} — {error}" : $"code {result.ExitCode}, sortie vide";
     }
 
     private static IEnumerable<int> Children(JsonElement item)
@@ -273,14 +320,40 @@ public sealed class WorkItemResolver
         return int.TryParse(tail, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id) ? id : null;
     }
 
-    private static (string? Type, string? Title) Fields(JsonElement item)
+    private static (string? Type, string? Title, string? Assignee) Fields(JsonElement item)
     {
         if (item.ValueKind != JsonValueKind.Object || !item.TryGetProperty("fields", out var fields) || fields.ValueKind != JsonValueKind.Object)
         {
-            return (null, null);
+            return (null, null, null);
         }
         string? Read(string name) => fields.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
-        return (Read("System.WorkItemType"), Read("System.Title"));
+        return (Read("System.WorkItemType"), Read("System.Title"), Assignee(fields));
+    }
+
+    /// <summary>Compte de la personne affectée, tel qu'az le renvoie : l'adresse de connexion.</summary>
+    private static string? Assignee(JsonElement fields)
+    {
+        if (!fields.TryGetProperty("System.AssignedTo", out var assigned) || assigned.ValueKind != JsonValueKind.Object) return null;
+        return assigned.TryGetProperty("uniqueName", out var unique) && unique.ValueKind == JsonValueKind.String ? unique.GetString() : null;
+    }
+
+    /// <summary>
+    /// Compte connecté à az, lu une seule fois par session. Introuvable : aucune tâche n'est
+    /// choisie à sa place, l'attribution reste à faire à la main.
+    /// </summary>
+    private async Task<string?> IdentityAsync(string az, CancellationToken ct)
+    {
+        if (_identityRead) return _identity;
+
+        var result = await ProcessRunner.RunAsync(
+            az,
+            new[] { "account", "show", "--query", "user.name", "--output", "tsv" },
+            CallTimeout,
+            ct).ConfigureAwait(false);
+        var name = result.Ok ? result.StdOut.Trim() : null;
+        _identity = string.IsNullOrWhiteSpace(name) ? null : name;
+        _identityRead = true;
+        return _identity;
     }
 
     private bool TryCache(int bug, out Resolution resolution)
@@ -296,7 +369,7 @@ public sealed class WorkItemResolver
                 }
                 if (Fresh(row))
                 {
-                    resolution = new Resolution(bug, null, null, false, "Attribution non résolue lors de la dernière tentative.");
+                    resolution = new Resolution(bug, null, null, false, row.Reason ?? "Attribution non résolue lors de la dernière tentative.");
                     return true;
                 }
             }
@@ -309,7 +382,7 @@ public sealed class WorkItemResolver
         DateTimeOffset.TryParse(row.CheckedAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var moment)
         && DateTimeOffset.Now - moment < (row.Transient ? RetryAfterHiccup : RetryAfterFailure);
 
-    private void Remember(int bug, int? workItem, string? title, string? type, bool resolved, bool transient = false)
+    private void Remember(int bug, int? workItem, string? title, string? type, bool resolved, bool transient = false, string? reason = null)
     {
         Dictionary<string, WorkItemCacheRow> payload;
         lock (_gate)
@@ -322,6 +395,7 @@ public sealed class WorkItemResolver
                 Type = type,
                 Resolved = resolved,
                 Transient = transient,
+                Reason = reason,
                 CheckedAt = DateTimeOffset.Now.ToString("o", CultureInfo.InvariantCulture),
             };
             payload = new Dictionary<string, WorkItemCacheRow>(_cache.Count, StringComparer.Ordinal);

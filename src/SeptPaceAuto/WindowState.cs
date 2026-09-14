@@ -6,10 +6,11 @@ namespace SeptPaceAuto;
 /// <summary>Emplacements de fichiers propres à la coquille de l'application.</summary>
 internal static class ShellPaths
 {
-    /// <summary>%LOCALAPPDATA%\7pace-auto</summary>
-    public static string DataFolder { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "7pace-auto");
+    /// <summary>
+    /// %LOCALAPPDATA%\7pace-auto, ou le dossier imposé par SEPTPACE_DATA pour faire tourner
+    /// une instance isolée à côté de l'installation courante.
+    /// </summary>
+    public static string DataFolder { get; } = Services.AppPaths.Root;
 
     /// <summary>Profil WebView2 persistant (cookies, cache, état de session).</summary>
     public static string WebViewFolder { get; } = Path.Combine(DataFolder, "webview");

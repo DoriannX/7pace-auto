@@ -11,7 +11,18 @@ internal static class AppPaths
 {
     public static string LocalAppData => Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
 
-    public static string Root => Path.Combine(LocalAppData, "7pace-auto");
+    /// <summary>
+    /// Racine des données. SEPTPACE_DATA la déplace : une instance de test tourne alors sur
+    /// son propre profil, sans toucher aux journées ni aux réglages de l'installation.
+    /// </summary>
+    public static string Root { get; } = Override() ?? Path.Combine(LocalAppData, "7pace-auto");
+
+    private static string? Override()
+    {
+        var folder = Environment.GetEnvironmentVariable("SEPTPACE_DATA");
+        return string.IsNullOrWhiteSpace(folder) ? null : Path.GetFullPath(folder);
+    }
+
     public static string Days => Path.Combine(Root, "days");
     public static string Settings => Path.Combine(Root, "settings.json");
     public static string WorkItems => Path.Combine(Root, "workitems.json");
