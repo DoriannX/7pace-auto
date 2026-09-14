@@ -1,12 +1,13 @@
 ﻿#requires -Version 5.1
 <#
 .SYNOPSIS
-    Publie 7pace auto pour Windows x64 et produit l'archive de publication.
+    Publie 7pace auto pour Windows x64 et produit ses deux artefacts de release.
 
 .DESCRIPTION
-    Compile le projet en autonome (self-contained) puis range les fichiers publiés
-    dans artifacts\SeptPaceAuto-win-x64.zip, à la racine de l'archive. Ce nom est
-    celui attendu par la mise à jour automatique de l'application.
+    Compile le projet en autonome (self-contained), range les fichiers publiés dans
+    artifacts\SeptPaceAuto-win-x64.zip — à la racine de l'archive, c'est ce nom et cette
+    disposition qu'attend la mise à jour automatique de l'application — puis construit
+    l'installateur artifacts\7pace-auto-setup.msi via build\pack-msi.ps1.
 
 .EXAMPLE
     .\build\publish.ps1
@@ -112,8 +113,13 @@ Add-Type -AssemblyName 'System.IO.Compression.FileSystem' -ErrorAction SilentlyC
 $taille = [math]::Round(((Get-Item -LiteralPath $archive).Length / 1MB), 1)
 $nombre = (Get-ChildItem -LiteralPath $dossierPublication -Recurse -File).Count
 
+Write-Etape 'Construction de l''installateur'
+$installateur = Join-Path $Output '7pace-auto-setup.msi'
+& (Join-Path $PSScriptRoot 'pack-msi.ps1') -Version $versionPropre -PublishDir $dossierPublication -Output $installateur
+
 Write-Host ''
 Write-Host 'Publication terminée.' -ForegroundColor Green
 Write-Info "Fichiers publiés : $nombre"
-Write-Info "Archive : $archive ($taille Mo)"
-Write-Info "Installation locale : .\build\install.ps1"
+Write-Info "Archive          : $archive ($taille Mo)"
+Write-Info "Installateur     : $installateur"
+Write-Info 'Installation : double-clic sur le MSI, ou .\build\install.ps1 pour la variante scriptée.'

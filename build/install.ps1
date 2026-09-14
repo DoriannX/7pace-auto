@@ -90,6 +90,16 @@ function New-Raccourci([string] $Chemin, [string] $Cible, [string] $Description)
     }
 }
 
+# Ne jamais remplacer les fichiers d'un produit géré par Windows Installer.
+$windowsInstaller = New-Object -ComObject WindowsInstaller.Installer
+try {
+    if (@($windowsInstaller.RelatedProducts('{045FED9F-20D2-4660-9932-964B6A2345F4}')).Count -gt 0) {
+        throw '7pace auto est installé par MSI. Utilisez 7pace-auto-setup.msi ou la mise à jour intégrée, pas ce script.'
+    }
+} finally {
+    [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($windowsInstaller)
+}
+
 Add-Type -AssemblyName 'System.IO.Compression.FileSystem' -ErrorAction SilentlyContinue
 
 $racine = Split-Path -Parent $PSScriptRoot

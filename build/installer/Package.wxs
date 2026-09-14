@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Paquet MSI de 7pace auto.
+
+  Installation pour l'utilisateur courant uniquement : aucune élévation, aucun composant
+  ciblant HKLM, et un dossier sous %LOCALAPPDATA% qui reste modifiable par la mise à jour
+  intégrée de l'application (elle recopie ses fichiers par-dessus).
+
+  Les données de l'utilisateur (%LOCALAPPDATA%\7pace-auto) ne font pas partie du paquet :
+  ni l'installation ni la désinstallation ne les touchent.
+
+  Construction : voir build\pack-msi.ps1 (variables Version et PublishDir).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <Package
+      Name="7pace auto"
+      Manufacturer="Doriann Xavier"
+      Version="$(var.Version)"
+      UpgradeCode="045FED9F-20D2-4660-9932-964B6A2345F4"
+      Scope="perUser"
+      Language="1036"
+      Codepage="1252"
+      InstallerVersion="500"
+      Compressed="yes">
+
+    <SummaryInformation
+        Description="7pace auto — suivi automatique du temps et imputation 7pace"
+        Manufacturer="Doriann Xavier" />
+
+    <!-- Même UpgradeCode : une version plus récente remplace l'ancienne sans créer une
+         deuxième entrée dans « Applications installées ». -->
+    <MajorUpgrade
+        DowngradeErrorMessage="Une version plus récente de 7pace auto est déjà installée. Désinstallez-la avant d'installer celle-ci."
+        AllowSameVersionUpgrades="yes" />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="SeptPaceAutoIcone" SourceFile="$(var.IconFile)" />
+
+    <!-- Entrée « Applications installées » : nom, éditeur et version viennent de Package. -->
+    <Property Id="ARPPRODUCTICON" Value="SeptPaceAutoIcone" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/DoriannX/7pace-auto" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/DoriannX/7pace-auto/issues" />
+    <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]"
+                 After="CostFinalize" Sequence="execute" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <!-- %LOCALAPPDATA%\Programs\7pace auto : le même dossier que build\install.ps1. -->
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="DossierProgrammes" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="7pace auto" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Principal" Title="7pace auto" Level="1">
+      <ComponentGroupRef Id="Application" />
+      <ComponentRef Id="RaccourciMenuDemarrer" />
+    </Feature>
+
+    <!-- Toute la publication .NET, récoltée à la construction : aucun fichier listé à la main. -->
+    <ComponentGroup Id="Application" Directory="INSTALLFOLDER">
+      <Files Include="$(var.PublishDir)\**" />
+    </ComponentGroup>
+
+    <Component Id="RaccourciMenuDemarrer" Directory="ProgramMenuFolder"
+               Guid="88ADB03E-511E-45B3-8F7E-CA13D833E1D0">
+      <Shortcut Id="RaccourciApplication"
+                Name="7pace auto"
+                Description="Suivi automatique du temps et imputation 7pace"
+                Target="[INSTALLFOLDER]SeptPaceAuto.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="SeptPaceAutoIcone" />
+      <!-- Composant hors dossier d'installation : il lui faut sa propre clé, sous HKCU. -->
+      <RegistryValue Root="HKCU" Key="Software\Doriann Xavier\7pace auto"
+                     Name="Raccourci" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+  </Package>
+</Wix>

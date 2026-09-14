@@ -1,7 +1,7 @@
 name: Publication
 
-# Un tag « vX.Y.Z » suffit : l'archive publiée ici est celle que l'application
-# télécharge par sa fenêtre de mise à jour (SeptPaceAuto-win-x64.zip).
+# Un tag « vX.Y.Z » suffit : il produit l'installateur 7pace-auto-setup.msi et l'archive
+# SeptPaceAuto-win-x64.zip, celle que l'application télécharge pour se mettre à jour.
 on:
   push:
     tags:
@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   release:
-    name: Construire et publier l'archive Windows
+    name: Construire et publier l'installateur et l'archive
     runs-on: windows-latest
 
     steps:
@@ -24,21 +24,29 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Publier l'application
+      - name: Installer l'outil WiX
+        shell: pwsh
+        run: dotnet tool install --global wix --version 5.0.2
+
+      - name: Publier l'application et construire l'installateur
         shell: pwsh
         run: ./build/publish.ps1 -Version "${{ github.ref_name }}"
 
-      - name: Vérifier l'archive
+      - name: Vérifier les artefacts
         shell: pwsh
         run: |
-          $archive = 'artifacts/SeptPaceAuto-win-x64.zip'
-          if (-not (Test-Path -LiteralPath $archive)) { throw "Archive absente : $archive" }
-          Get-Item -LiteralPath $archive | Select-Object Name, Length
+          $attendus = 'artifacts/SeptPaceAuto-win-x64.zip', 'artifacts/7pace-auto-setup.msi'
+          foreach ($fichier in $attendus) {
+            if (-not (Test-Path -LiteralPath $fichier)) { throw "Artefact absent : $fichier" }
+          }
+          Get-Item -LiteralPath $attendus | Select-Object Name, Length
 
       - name: Créer la publication GitHub
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
-          files: artifacts/SeptPaceAuto-win-x64.zip
+          files: |
+            artifacts/7pace-auto-setup.msi
+            artifacts/SeptPaceAuto-win-x64.zip
           generate_release_notes: true
           fail_on_unmatched_files: true

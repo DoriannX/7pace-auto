@@ -30,18 +30,18 @@ fenêtres.
 
 ## Installation
 
-Téléchargez `SeptPaceAuto-win-x64.zip` depuis la dernière
-[release](../../releases/latest), puis :
+Téléchargez `7pace-auto-setup.msi` depuis la dernière [release](../../releases/latest) et
+double-cliquez dessus : c'est tout. L'installation se fait pour votre compte, sans droits
+administrateur ni fenêtre d'élévation ; l'application apparaît ensuite dans le menu
+Démarrer et dans « Applications installées », d'où elle se désinstalle.
 
-```powershell
-# depuis le dossier du dépôt, ou avec le zip téléchargé
-powershell -ExecutionPolicy Bypass -File build/install.ps1 -Zip <chemin-du-zip>
-```
+Les mises à jour se font depuis l'application elle-même, pas en réinstallant le MSI. Qui
+préfère une installation scriptée garde `SeptPaceAuto-win-x64.zip` et
+`build/install.ps1 -Zip <chemin-du-zip>` ; `build/uninstall.ps1` fait le retrait. Dans les
+deux cas, vos journées (`%LOCALAPPDATA%\7pace-auto`) survivent à la désinstallation.
 
-L'installation se fait pour l'utilisateur courant, sans droits administrateur, dans
-`%LOCALAPPDATA%\Programs\7pace auto`, avec un raccourci dans le menu Démarrer.
-`build/uninstall.ps1` retire l'application ; vos journées restent en place sauf
-`-PurgeData`.
+Déjà installé avec le script ? Désinstallez cette ancienne installation depuis
+« Applications installées » avant de passer au MSI ; vos données restent en place.
 
 Prérequis : Windows 10/11 et le runtime WebView2, déjà présent sur un Windows à jour.
 
@@ -73,11 +73,14 @@ l'application. La recherche peut être désactivée dans les paramètres.
 
 ```powershell
 dotnet run --project src/SeptPaceAuto        # lancer en développement
-powershell -File build/publish.ps1           # produire artifacts/SeptPaceAuto-win-x64.zip
+powershell -File build/publish.ps1           # produire le zip et 7pace-auto-setup.msi
 ```
 
 .NET 8, WinForms et WebView2 pour l'hôte ; l'interface est du HTML/CSS/JS servi depuis
 `src/SeptPaceAuto/web`. Une seule dépendance NuGet : `Microsoft.Web.WebView2`.
+
+L'installateur est décrit par `build/installer/Package.wxs` (WiX 5, installé à la demande
+par `build/pack-msi.ps1`).
 
 ## Licence
 

@@ -9,9 +9,10 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>SeptPaceAuto</RootNamespace>
     <AssemblyName>SeptPaceAuto</AssemblyName>
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
     <Product>7pace auto</Product>
     <AssemblyTitle>7pace auto</AssemblyTitle>
+    <ApplicationIcon>..\..\build\installer\7pace-auto.ico</ApplicationIcon>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <EnableDefaultNoneItems>true</EnableDefaultNoneItems>
