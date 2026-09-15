@@ -306,6 +306,7 @@ internal sealed class GitTracker : IAsyncDisposable
             resolved ? "ticket" : "unknown",
             EntryTitle(),
             resolved ? _resolution.WorkItem : null,
+            _resolution.Bug,
             "git",
             _blockEntryId);
 
@@ -352,6 +353,7 @@ internal sealed class GitTracker : IAsyncDisposable
                     end,
                     "unknown",
                     "Intervalle à préciser (poste en veille ou arrêté)",
+                    null,
                     null,
                     "gap",
                     null);

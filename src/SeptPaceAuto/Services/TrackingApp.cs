@@ -23,6 +23,13 @@ internal sealed class TrackingApp : ITrackingApp
     private static readonly TimeSpan FirstUpdateDelay = TimeSpan.FromSeconds(5);
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
+
+    /// <summary>
+    /// Client réservé à 7pace, sans délai propre : SevenPaceClient borne lui-même relecture
+    /// et écriture. Partager le client d'Outlook coupait la relecture à 30 s alors qu'elle
+    /// s'accorde 45 s, et l'échec se racontait comme un silence de 7pace.
+    /// </summary>
+    private readonly HttpClient _sevenPaceHttp = new() { Timeout = Timeout.InfiniteTimeSpan };
     private readonly DayStore _days;
     private readonly WorkItemResolver _resolver;
     private readonly GitTracker _tracker;
@@ -52,7 +59,7 @@ internal sealed class TrackingApp : ITrackingApp
         _resolver = new WorkItemResolver(() => _profile.Settings.AzureOrganization);
         _tracker = new GitTracker(_days, _resolver, () => _profile);
         _outlook = new OutlookCalendar(_http);
-        _sevenPace = new SevenPaceClient(_http, () => _profile.SevenPaceEndpoint);
+        _sevenPace = new SevenPaceClient(_sevenPaceHttp, () => _profile.SevenPaceEndpoint);
         _updates = UpdateServiceFactory.Create(AppVersion.Current);
 
         _days.DayChanged += OnDayChanged;
@@ -369,7 +376,7 @@ internal sealed class TrackingApp : ITrackingApp
 
     /// <summary>
     /// Relance la résolution Azure des créneaux brouillon restés à attribuer, cache ignoré.
-    /// En tâche de fond : jusqu'à 20 s par ticket, alors que le pont abandonne à 20 s.
+    /// En tâche de fond : az peut prendre plusieurs minutes, le pont n'attend pas.
     /// </summary>
     private void BeginAzureRefresh(string from, string to)
     {
@@ -389,12 +396,24 @@ internal sealed class TrackingApp : ITrackingApp
                 {
                     // Un créneau envoyé est un miroir de 7pace : Azure n'a rien à y changer.
                     if (entry.SentAt is not null) continue;
-                    if (!string.Equals(entry.Activity, "unknown", StringComparison.Ordinal)) continue;
                     if (!string.Equals(entry.Source, "git", StringComparison.Ordinal) && !string.Equals(entry.Source, "gap", StringComparison.Ordinal)) continue;
 
-                    var match = BugInTitle.Match(entry.Title ?? string.Empty);
-                    if (!match.Success || !int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var bug)) continue;
-                    if (!targets.TryGetValue(bug, out var list)) targets[bug] = list = new List<(string, Entry)>();
+                    /* Tout créneau non envoyé est revérifié, déjà attribué ou non : une
+                       attribution fausse doit pouvoir être corrigée par une synchronisation,
+                       sans quoi elle tient jusqu'à une reprise à la main. Le numéro vient du
+                       créneau ; les créneaux écrits avant ce champ ne l'ont que dans leur
+                       titre, ou plus du tout dès qu'une attribution l'a remplacé — le cache
+                       de résolution sait alors de quel Bug vient l'élément de travail. */
+                    var bug = entry.Bug;
+                    if (bug is null)
+                    {
+                        var match = BugInTitle.Match(entry.Title ?? string.Empty);
+                        bug = match.Success && int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var found)
+                            ? found
+                            : entry.WorkItem is int item ? _resolver.BugOf(item) : null;
+                        if (bug is null) continue;
+                    }
+                    if (!targets.TryGetValue(bug.Value, out var list)) targets[bug.Value] = list = new List<(string, Entry)>();
                     list.Add((pair.Key, entry));
                 }
             }
@@ -416,9 +435,12 @@ internal sealed class TrackingApp : ITrackingApp
                 var title = string.IsNullOrWhiteSpace(resolution.Title) ? $"Fix #{item}" : resolution.Title!;
                 foreach (var (date, entry) in pair.Value)
                 {
+                    // Déjà juste : ne rien réécrire, et ne pas le compter comme une correction.
+                    if (entry.WorkItem == item && string.Equals(entry.Title, title, StringComparison.Ordinal)) continue;
+
                     // WriteTracked plutôt que Save : le créneau reste piloté par le suivi Git,
                     // qui doit pouvoir continuer à prolonger sa fin.
-                    var written = _days.WriteTracked(date, entry.StartMinutes, entry.EndMinutes, "ticket", title, item, entry.Source, entry.Id);
+                    var written = _days.WriteTracked(date, entry.StartMinutes, entry.EndMinutes, "ticket", title, item, pair.Key, entry.Source, entry.Id);
                     if (written is not null) resolved++;
                 }
             }
@@ -434,8 +456,8 @@ internal sealed class TrackingApp : ITrackingApp
     private static string AzureMessage(int resolved, int failed)
     {
         var done = resolved == 0
-            ? "aucune attribution complétée"
-            : $"{resolved} attribution{(resolved > 1 ? "s" : string.Empty)} complétée{(resolved > 1 ? "s" : string.Empty)}";
+            ? "aucune attribution à corriger"
+            : $"{resolved} attribution{(resolved > 1 ? "s" : string.Empty)} mise{(resolved > 1 ? "s" : string.Empty)} à jour";
         return failed == 0
             ? $"Azure : {done}."
             : $"Azure : {done}, {failed} toujours à faire.";
@@ -544,6 +566,7 @@ internal sealed class TrackingApp : ITrackingApp
                     activity,
                     string.IsNullOrWhiteSpace(meeting.Subject) ? profile.Label(activity) : meeting.Subject,
                     profile.WorkItemFor(activity),
+                    null,
                     "manual",
                     null);
             }
@@ -641,5 +664,6 @@ internal sealed class TrackingApp : ITrackingApp
         await _tracker.DisposeAsync().ConfigureAwait(false);
         _life?.Dispose();
         _http.Dispose();
+        _sevenPaceHttp.Dispose();
     }
 }

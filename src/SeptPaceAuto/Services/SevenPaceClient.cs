@@ -49,6 +49,13 @@ public sealed class SevenPaceClient
     /// </summary>
     private static readonly TimeSpan ReadBudget = TimeSpan.FromSeconds(45);
 
+    /// <summary>
+    /// Budget d'une écriture. C'est ce client qui borne ses appels, pas le HttpClient :
+    /// un délai de client plus court que ReadBudget faisait échouer une relecture normale
+    /// sur un délai qui n'était pas le nôtre, sans jamais nommer la vraie cause.
+    /// </summary>
+    private static readonly TimeSpan WriteBudget = TimeSpan.FromSeconds(20);
+
     private static readonly int[] Backoff = { 5, 15, 30 };
 
     private readonly HttpClient _http;
@@ -216,6 +223,9 @@ public sealed class SevenPaceClient
     {
         var payload = JsonSerializer.Serialize(new { timestamp, length = seconds, workItemId = workItem }, Json.Wire);
 
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(WriteBudget);
+
         var (reply, failure, _) = await SendAsync(
             () => Signed(
                 new HttpRequestMessage(HttpMethod.Post, endpoint)
@@ -223,7 +233,7 @@ public sealed class SevenPaceClient
                     Content = new StringContent(payload, new UTF8Encoding(false), "application/json"),
                 },
                 token),
-            ct).ConfigureAwait(false);
+            budget.Token).ConfigureAwait(false);
         if (failure is not null) return (failure, null);
 
         using var response = reply!;
@@ -231,7 +241,7 @@ public sealed class SevenPaceClient
 
         try
         {
-            var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var body = await response.Content.ReadAsStringAsync(budget.Token).ConfigureAwait(false);
             return (null, WorkLogIdOf(body));
         }
         catch (OperationCanceledException)

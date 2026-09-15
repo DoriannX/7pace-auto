@@ -29,6 +29,13 @@ public sealed class Entry
     [JsonPropertyName("source")] public string Source { get; set; } = "manual";
     [JsonPropertyName("sentAt")] public string? SentAt { get; set; }
 
+    /// <summary>
+    /// Bug ou PBI dont ce créneau vient, posé par le suivi Git. Il survit à l'attribution :
+    /// sans lui, un créneau déjà attribué ne pouvait plus être revérifié auprès d'Azure, et
+    /// une attribution fausse restait en place jusqu'à une correction à la main.
+    /// </summary>
+    [JsonPropertyName("bug")] public int? Bug { get; set; }
+
     /// <summary>Identifiant du worklog 7pace, posé à l'envoi : c'est lui qui rend le miroir possible.</summary>
     [JsonPropertyName("workLogId")] public string? WorkLogId { get; set; }
 

@@ -330,7 +330,7 @@ public sealed class DayStore
     /// les activités déjà présentes : le suivi ne double jamais un temps saisi à la main.
     /// Retourne le créneau écrit (null si rien n'était écrivable).
     /// </summary>
-    public Entry? WriteTracked(string date, int from, int to, string activity, string title, int? workItem, string source, int? entryId)
+    public Entry? WriteTracked(string date, int from, int to, string activity, string title, int? workItem, int? bug, string source, int? entryId)
     {
         List<Entry> snapshot;
         Entry written;
@@ -362,6 +362,7 @@ public sealed class DayStore
                 written.Activity = activity;
                 written.Title = title;
                 written.WorkItem = workItem;
+                written.Bug = bug ?? written.Bug;
                 written.Source = source;
             }
             if (existing is null) day.Add(written);

@@ -42,14 +42,18 @@ public sealed class WorkItemResolver
 {
     private static readonly Regex Number = new(@"(?<!\d)(\d{4,6})(?!\d)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    /// <summary>Délai d'un appel az isolé.</summary>
-    private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(20);
+    /// <summary>
+    /// Délai d'un appel az isolé. Mesuré sur ce poste : 2,5 s à chaud, mais le premier appel
+    /// après le démarrage rafraîchit le jeton et dépasse la minute — à 20 s, la toute première
+    /// résolution de la journée échouait alors qu'az allait répondre.
+    /// </summary>
+    private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(120);
 
     /// <summary>
     /// Temps total accordé à une résolution : le parent, chaque enfant et le compte connecté
     /// font autant d'appels az. La résolution tourne en fond, elle ne retient jamais le chrono.
     /// </summary>
-    private static readonly TimeSpan Budget = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan Budget = TimeSpan.FromSeconds(300);
     private static readonly TimeSpan RetryAfterFailure = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan RetryAfterHiccup = TimeSpan.FromMinutes(2);
     private const string ChildLink = "System.LinkTypes.Hierarchy-Forward";
@@ -124,8 +128,25 @@ public sealed class WorkItemResolver
     }
 
     /// <summary>
+    /// Bug d'où vient une attribution déjà posée, retrouvé dans le cache. Sert aux créneaux
+    /// écrits avant que le numéro ne soit conservé sur le créneau lui-même : sans lui, une
+    /// attribution fausse n'aurait plus aucun point d'entrée pour être revérifiée.
+    /// </summary>
+    public int? BugOf(int workItem)
+    {
+        lock (_gate)
+        {
+            foreach (var pair in _cache)
+            {
+                if (pair.Value.Resolved && pair.Value.WorkItem == workItem) return pair.Key;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Réponse immédiate depuis le cache ; sinon une seule interrogation az à la fois,
-    /// bornée à 20 s au total, et un échec n'est retenté qu'au bout de dix minutes.
+    /// bornée par le budget ci-dessus, et un échec n'est retenté qu'au bout de dix minutes.
     /// </summary>
     public async Task<Resolution> ResolveAsync(string? branch, CancellationToken ct)
     {
@@ -200,15 +221,24 @@ public sealed class WorkItemResolver
         }
 
         var candidates = new List<(int Id, string Type, string? Title, string? Assignee)>();
+        var unread = 0;
         using (parent)
         {
             foreach (var child in Children(parent.RootElement))
             {
                 ct.ThrowIfCancellationRequested();
                 using var detail = await ShowAsync(az, child, ct).ConfigureAwait(false);
-                if (detail is null) continue;
+                if (detail is null)
+                {
+                    unread++;
+                    continue;
+                }
                 var (type, title, assignee) = Fields(detail.RootElement);
-                if (type is null) continue;
+                if (type is null)
+                {
+                    unread++;
+                    continue;
+                }
 
                 // Un Fix tranche tout de suite : c'est l'élément d'imputation par convention.
                 if (string.Equals(type, "Fix", StringComparison.OrdinalIgnoreCase))
@@ -224,18 +254,41 @@ public sealed class WorkItemResolver
         // doute : plusieurs tâches, c'est à l'utilisateur de choisir, pas à l'application.
         var tasks = candidates.Where(candidate => Imputable.Contains(candidate.Type)).ToList();
 
-        // Un parent partagé (Roadmap, PBI) porte souvent une tâche par développeur. Une seule
-        // porte le compte connecté à az : c'est la sienne, pas une supposition.
-        if (tasks.Count > 1)
+        /* Un parent partagé (Roadmap, PBI) porte souvent une tâche par développeur. Le compte
+           connecté à az départage — y compris quand une seule tâche a pu être lue : une tâche
+           affectée à quelqu'un d'autre n'est jamais la nôtre, et l'imputer silencieusement
+           faisait apparaître le titre d'un collègue sur les créneaux de la journée. */
+        var identity = tasks.Count > 0 ? await IdentityAsync(az, ct).ConfigureAwait(false) : null;
+        if (identity is not null)
         {
-            var identity = await IdentityAsync(az, ct).ConfigureAwait(false);
-            if (identity is not null)
+            var mine = tasks
+                .Where(candidate => string.Equals(candidate.Assignee, identity, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (mine.Count == 1)
             {
-                var mine = tasks
-                    .Where(candidate => string.Equals(candidate.Assignee, identity, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-                if (mine.Count == 1) tasks = mine;
+                Remember(bug, mine[0].Id, mine[0].Title, mine[0].Type, resolved: true);
+                return new Resolution(bug, mine[0].Id, mine[0].Title, true, null);
             }
+            if (mine.Count == 0)
+            {
+                var foreign = tasks.Where(candidate => !string.IsNullOrWhiteSpace(candidate.Assignee)).ToList();
+                if (foreign.Count == tasks.Count && tasks.Count > 0)
+                {
+                    return Failed(bug, shutdown, ct, $"Aucune tâche enfant de #{bug} n’est affectée à {identity} : l’attribution reste à faire à la main.");
+                }
+                tasks = tasks.Where(candidate => string.IsNullOrWhiteSpace(candidate.Assignee)).ToList();
+            }
+            else
+            {
+                tasks = mine;
+            }
+        }
+
+        // Une réponse partielle n'autorise aucune conclusion : la tâche manquante peut être
+        // celle qu'il fallait choisir. C'est passager, donc retenté deux minutes plus tard.
+        if (unread > 0)
+        {
+            return Failed(bug, shutdown, ct, $"{unread} tâche{(unread > 1 ? "s" : string.Empty)} enfant de #{bug} n’a pas pu être lue : {_lastAzError ?? "az n’a rien renvoyé"}.", transient: true);
         }
 
         if (tasks.Count == 1)
