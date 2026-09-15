@@ -1504,15 +1504,13 @@ function applyTracking(next) {
 /* ---------- connexions réelles ---------- */
 
 function renderConnections(connections) {
-  for (const [key, selector] of [['sevenpace', '#connection-sevenpace'], ['outlook', '#connection-outlook']]) {
-    const info = connections?.[key];
-    if (!info) continue;
-    const node = $(selector);
-    node.dataset.status = info.status ?? '';
-    if (info.label) {
-      swapText(node.querySelector('span'), info.label);
-      node.title = info.label;
-    }
+  const info = connections?.sevenpace;
+  if (!info) return;
+  const node = $('#connection-sevenpace');
+  node.dataset.status = info.status ?? '';
+  if (info.label) {
+    swapText(node.querySelector('span'), info.label);
+    node.title = info.label;
   }
 }
 /* La liste des activités proposées est reconstruite depuis les réglages. */
@@ -2278,8 +2276,7 @@ function renderOnboardSummary() {
       : 'Aucun jeton saisi : aucun envoi ne sera possible'],
     ['Horaires', rhythmText(fields)],
     ['Relevé', `toutes les ${fields.pollSeconds.value || '30'} secondes`],
-    ['Activités', count ? `${count} activité${count > 1 ? 's' : ''} proposée${count > 1 ? 's' : ''} dans l’éditeur` : 'Aucune : seuls les tickets seront proposés'],
-    ['Calendrier Outlook', 'Non connecté : aucune réunion ne sera importée']
+    ['Activités', count ? `${count} activité${count > 1 ? 's' : ''} proposée${count > 1 ? 's' : ''} dans l’éditeur` : 'Aucune : seuls les tickets seront proposés']
   ];
   /* Le récapitulatif est réconcilié par intitulé : il se met à jour, il ne se réécrit pas. */
   reconcile($('#onboard-summary'), rows.map(([term, value]) => ({ key: term, value: { term, value } })), {

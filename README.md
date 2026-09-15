@@ -25,8 +25,6 @@ fenêtres.
   signal est la branche Git active.
 - Aucune télémétrie, aucun envoi vers un service tiers autre que 7pace et, pour les mises à
   jour, l'API publique de GitHub.
-- L'intégration du calendrier Outlook est préparée mais **non connectée** : elle attend une
-  approbation administrateur côté Microsoft Entra et n'affiche donc aucune réunion.
 
 ## Installation
 

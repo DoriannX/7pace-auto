@@ -13,7 +13,7 @@ namespace SeptPaceAuto.Services;
 
 /// <summary>
 /// Le domaine complet derrière le seam : réglages, magasin des journées, suivi Git,
-/// résolution des work items, agenda, envoi 7pace et mises à jour de l'application.
+/// résolution des work items, envoi 7pace et mises à jour de l'application.
 /// Ne connaît ni fenêtre ni WebView2.
 /// </summary>
 internal sealed class TrackingApp : ITrackingApp
@@ -22,18 +22,14 @@ internal sealed class TrackingApp : ITrackingApp
     private static readonly TimeSpan UpdateInterval = TimeSpan.FromHours(6);
     private static readonly TimeSpan FirstUpdateDelay = TimeSpan.FromSeconds(5);
 
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
-
     /// <summary>
-    /// Client réservé à 7pace, sans délai propre : SevenPaceClient borne lui-même relecture
-    /// et écriture. Partager le client d'Outlook coupait la relecture à 30 s alors qu'elle
-    /// s'accorde 45 s, et l'échec se racontait comme un silence de 7pace.
+    /// Client dédié à 7pace, sans délai propre : SevenPaceClient borne lui-même relecture
+    /// et écriture.
     /// </summary>
     private readonly HttpClient _sevenPaceHttp = new() { Timeout = Timeout.InfiniteTimeSpan };
     private readonly DayStore _days;
     private readonly WorkItemResolver _resolver;
     private readonly GitTracker _tracker;
-    private readonly OutlookCalendar _outlook;
     private readonly SevenPaceClient _sevenPace;
     private readonly IUpdateService _updates;
 
@@ -58,7 +54,6 @@ internal sealed class TrackingApp : ITrackingApp
         _days = new DayStore(() => _profile);
         _resolver = new WorkItemResolver(() => _profile.Settings.AzureOrganization);
         _tracker = new GitTracker(_days, _resolver, () => _profile);
-        _outlook = new OutlookCalendar(_http);
         _sevenPace = new SevenPaceClient(_sevenPaceHttp, () => _profile.SevenPaceEndpoint);
         _updates = UpdateServiceFactory.Create(AppVersion.Current);
 
@@ -81,13 +76,12 @@ internal sealed class TrackingApp : ITrackingApp
         switch (method)
         {
             case "bootstrap":
-                return await BootstrapAsync(ct).ConfigureAwait(false);
+                return Bootstrap();
 
             case "loadRange":
             {
                 var from = Text(parameters, "from");
                 var to = Text(parameters, "to");
-                await SyncCalendarAsync(from, to, ct).ConfigureAwait(false);
                 return Write(new { days = _days.Range(from, to) });
             }
 
@@ -194,10 +188,9 @@ internal sealed class TrackingApp : ITrackingApp
         }
     }
 
-    private async Task<string> BootstrapAsync(CancellationToken ct)
+    private string Bootstrap()
     {
         var today = TimeRules.DateKey(DateTime.Now);
-        await SyncCalendarAsync(today, today, ct).ConfigureAwait(false);
 
         var profile = _profile;
         return Write(new
@@ -249,11 +242,7 @@ internal sealed class TrackingApp : ITrackingApp
         });
     }
 
-    private object Connections() => new
-    {
-        outlook = _outlook.State(),
-        sevenpace = _sevenPace.State(),
-    };
+    private object Connections() => new { sevenpace = _sevenPace.State() };
 
     private async Task<string> SubmitAsync(string date, CancellationToken ct)
     {
@@ -538,55 +527,6 @@ internal sealed class TrackingApp : ITrackingApp
         Pushed?.Invoke("update", Write(Update(info)));
     }
 
-    /// <summary>
-    /// Recopie les réunions de l'agenda en créneaux. Tant que l'approbation administrateur
-    /// n'est pas accordée, l'agenda ne rend aucun évènement et cette méthode ne fait rien :
-    /// aucune réunion n'est inventée.
-    /// </summary>
-    private async Task SyncCalendarAsync(string from, string to, CancellationToken ct)
-    {
-        if (!string.Equals(_outlook.State().Status, "connected", StringComparison.Ordinal)) return;
-
-        var first = TimeRules.ParseDate(from);
-        var last = TimeRules.ParseDate(to);
-        if (last < first) (first, last) = (last, first);
-        if ((last - first).TotalDays > 31) last = first.AddDays(31);
-
-        for (var cursor = first; cursor <= last; cursor = cursor.AddDays(1))
-        {
-            foreach (var meeting in await _outlook.EventsAsync(cursor, ct).ConfigureAwait(false))
-            {
-                if (meeting.Start.Date != cursor.Date) continue;
-                var profile = _profile;
-                var activity = ActivityFor(meeting.Subject);
-                _days.WriteTracked(
-                    TimeRules.DateKey(cursor),
-                    TimeRules.MinuteOfDay(meeting.Start),
-                    meeting.End.Date == cursor.Date ? TimeRules.MinuteOfDay(meeting.End) : 24 * 60,
-                    activity,
-                    string.IsNullOrWhiteSpace(meeting.Subject) ? profile.Label(activity) : meeting.Subject,
-                    profile.WorkItemFor(activity),
-                    null,
-                    "manual",
-                    null);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Rattachement d'une réunion à l'une des activités récurrentes. Le numéro de tâche, lui,
-    /// vient des réglages : sans tâche configurée, le créneau reste à attribuer.
-    /// </summary>
-    private static string ActivityFor(string subject)
-    {
-        var text = (subject ?? string.Empty).ToLowerInvariant();
-        if (text.Contains("stand-up", StringComparison.Ordinal) || text.Contains("standup", StringComparison.Ordinal) || text.Contains("daily", StringComparison.Ordinal)) return "standup";
-        if (text.Contains("rétro", StringComparison.Ordinal) || text.Contains("retro", StringComparison.Ordinal) || text.Contains("planning", StringComparison.Ordinal) || text.Contains("poker", StringComparison.Ordinal)) return "planning";
-        if (text.Contains("revue de sprint", StringComparison.Ordinal) || text.Contains("sprint review", StringComparison.Ordinal) || text.Contains("démo", StringComparison.Ordinal)) return "review";
-        if (text.Contains("formation", StringComparison.Ordinal)) return "training";
-        return "meeting";
-    }
-
     private void OnDayChanged(string date, List<Entry> entries) => Pushed?.Invoke("day", Write(new { date, entries }));
 
     /// <summary>Poussée à chaque changement d'état, et au plus une fois par demi-minute sinon.</summary>
@@ -663,7 +603,6 @@ internal sealed class TrackingApp : ITrackingApp
 
         await _tracker.DisposeAsync().ConfigureAwait(false);
         _life?.Dispose();
-        _http.Dispose();
         _sevenPaceHttp.Dispose();
     }
 }
