@@ -72,12 +72,18 @@ l'application. La recherche peut être désactivée dans les paramètres.
 ## Développement
 
 ```powershell
-dotnet run --project src/SeptPaceAuto        # lancer en développement
-powershell -File build/publish.ps1           # produire le zip et 7pace-auto-setup.msi
+dotnet run --project src/SeptPaceAuto.Terminal # lancer le MVP interactif dans le terminal
+dotnet run --project src/SeptPaceAuto          # lancer l'interface Windows
+powershell -File build/publish.ps1             # produire le zip et 7pace-auto-setup.msi
 ```
 
-.NET 8, WinForms et WebView2 pour l'hôte ; l'interface est du HTML/CSS/JS servi depuis
-`src/SeptPaceAuto/web`. Une seule dépendance NuGet : `Microsoft.Web.WebView2`.
+Le cœur (`src/SeptPaceAuto.Core`) porte le suivi Git, les journées et les intégrations.
+Les adaptateurs Windows et terminal utilisent le même contrat JSON et le même profil de
+données ; ils ne se lancent donc pas simultanément sur ce profil. Le terminal couvre la
+configuration, le suivi, la correction, l'envoi confirmé et la synchronisation 7pace.
+
+.NET 8, WinForms et WebView2 pour l'hôte Windows ; l'interface est du HTML/CSS/JS servi
+depuis `src/SeptPaceAuto/web`. Une seule dépendance NuGet : `Microsoft.Web.WebView2`.
 
 L'installateur est décrit par `build/installer/Package.wxs` (WiX 5, installé à la demande
 par `build/pack-msi.ps1`).

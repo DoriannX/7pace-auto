@@ -11,19 +11,12 @@ internal static class Program
     /// Exclusion et canal d'activation propres au profil de données : deux profils distincts
     /// coexistent, deux exécutions du même profil se rejoignent.
     /// </summary>
-    private static readonly string InstanceKey = Key(ShellPaths.DataFolder);
-
-    private static string InstanceMutexName => $@"Local\SeptPaceAuto.instance.{InstanceKey}";
+    private static readonly string InstanceKey = TrackingAppFactory.DataKey;
 
     /// <summary>Canal d'activation : une seconde exécution réveille la fenêtre existante.</summary>
     internal static string ActivationPipeName => $"SeptPaceAuto.activate.{InstanceKey}";
 
-    private static string Key(string folder)
-    {
-        var bytes = System.Security.Cryptography.SHA256.HashData(
-            Encoding.UTF8.GetBytes(folder.ToLowerInvariant()));
-        return Convert.ToHexString(bytes, 0, 8);
-    }
+    private static string InstanceMutexName => TrackingAppFactory.InstanceMutexName;
 
     [STAThread]
     private static int Main()

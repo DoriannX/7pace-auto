@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>SeptPaceAuto</RootNamespace>
+    <AssemblyName>SeptPaceAuto.Core</AssemblyName>
+  </PropertyGroup>
+
+</Project>

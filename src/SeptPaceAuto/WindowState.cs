@@ -10,7 +10,7 @@ internal static class ShellPaths
     /// %LOCALAPPDATA%\7pace-auto, ou le dossier imposé par SEPTPACE_DATA pour faire tourner
     /// une instance isolée à côté de l'installation courante.
     /// </summary>
-    public static string DataFolder { get; } = Services.AppPaths.Root;
+    public static string DataFolder { get; } = Services.TrackingAppFactory.DataFolder;
 
     /// <summary>Profil WebView2 persistant (cookies, cache, état de session).</summary>
     public static string WebViewFolder { get; } = Path.Combine(DataFolder, "webview");

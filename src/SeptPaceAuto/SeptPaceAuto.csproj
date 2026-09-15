@@ -22,6 +22,10 @@
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\SeptPaceAuto.Core\SeptPaceAuto.Core.csproj" />
+  </ItemGroup>
+
   <!-- L'interface validée (maquette adaptée) est copiée telle quelle à côté de l'exécutable. -->
   <ItemGroup>
     <None Update="web/**/*">

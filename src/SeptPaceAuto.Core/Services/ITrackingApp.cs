@@ -6,8 +6,8 @@ using System.Threading.Tasks;
 namespace SeptPaceAuto.Services;
 
 /// <summary>
-/// Seam unique entre l'hôte WinForms/WebView2 et le domaine : l'interface ne connaît
-/// que du JSON, le domaine ne connaît aucune fenêtre.
+/// Contrat stable entre le cœur et ses adaptateurs : chaque interface échange du JSON,
+/// tandis que le domaine ne connaît ni fenêtre, ni terminal, ni technologie d'affichage.
 /// </summary>
 public interface ITrackingApp : IAsyncDisposable
 {
@@ -28,5 +28,21 @@ public interface ITrackingApp : IAsyncDisposable
 /// <summary>Point d'entrée unique du domaine.</summary>
 public static class TrackingAppFactory
 {
+    /// <summary>Profil de données partagé par tous les adaptateurs de l'application.</summary>
+    public static string DataFolder => AppPaths.Root;
+
+    /// <summary>Clé stable du profil, utilisée pour empêcher deux adaptateurs d'écrire simultanément.</summary>
+    public static string DataKey { get; } = Key(DataFolder);
+
+    /// <summary>Mutex partagé par l'interface Windows et l'adaptateur terminal.</summary>
+    public static string InstanceMutexName => $@"Local\SeptPaceAuto.instance.{DataKey}";
+
     public static ITrackingApp Create() => new TrackingApp();
+
+    private static string Key(string folder)
+    {
+        var bytes = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(folder.ToLowerInvariant()));
+        return Convert.ToHexString(bytes, 0, 8);
+    }
 }
