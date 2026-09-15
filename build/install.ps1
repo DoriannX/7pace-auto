@@ -70,7 +70,7 @@ function Stop-Application {
     Start-Sleep -Milliseconds 500
 }
 
-function New-Raccourci([string] $Chemin, [string] $Cible, [string] $Description) {
+function New-Raccourci([string] $Chemin, [string] $Cible, [string] $Description, [int] $Fenetre = 1) {
     $dossier = Split-Path -Parent $Chemin
     if (-not (Test-Path -LiteralPath $dossier)) {
         New-Item -ItemType Directory -Path $dossier -Force | Out-Null
@@ -84,6 +84,8 @@ function New-Raccourci([string] $Chemin, [string] $Cible, [string] $Description)
         $raccourci.WorkingDirectory = Split-Path -Parent $Cible
         $raccourci.IconLocation = "$Cible,0"
         $raccourci.Description = $Description
+        # 7 = minimise : la collecte tourne sans fenetre au premier plan.
+        $raccourci.WindowStyle = $Fenetre
         $raccourci.Save()
     } finally {
         try { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) } catch { }
@@ -170,11 +172,11 @@ try {
 
     $demarrage = Join-Path ([Environment]::GetFolderPath('Startup')) "$NomApplication.lnk"
     if ($Startup) {
-        New-Raccourci -Chemin $demarrage -Cible $executable -Description 'Suivi automatique du temps et imputation 7pace'
+        New-Raccourci -Chemin $demarrage -Cible $executable -Description 'Collecte du temps, ajustement et envoi 7pace' -Fenetre 7
         Write-Info "Démarrage automatique : $demarrage"
     } elseif (Test-Path -LiteralPath $demarrage) {
         # Une installation précédente avait activé le démarrage : la cible est rafraîchie.
-        New-Raccourci -Chemin $demarrage -Cible $executable -Description 'Suivi automatique du temps et imputation 7pace'
+        New-Raccourci -Chemin $demarrage -Cible $executable -Description 'Collecte du temps, ajustement et envoi 7pace' -Fenetre 7
         Write-Info "Démarrage automatique conservé : $demarrage"
     }
 

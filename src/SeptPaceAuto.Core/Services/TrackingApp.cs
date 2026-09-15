@@ -5,25 +5,22 @@ using System.Globalization;
 using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace SeptPaceAuto.Services;
 
 /// <summary>
-/// Coordination du suivi Git, des journées, de la résolution des work items, de l’envoi
-/// 7pace et des mises à jour du terminal.
+/// Coordination du suivi Git, des journées en attente, de la résolution des éléments de
+/// travail, de l'envoi 7pace et des mises à jour du terminal.
+///
+/// L'application écrit dans 7pace et n'en lit jamais rien : une journée envoyée est close,
+/// son détail local est supprimé, et 7pace fait seul autorité ensuite.
 /// </summary>
 internal sealed class TrackingApp : ITrackingApp
 {
-    private static readonly TimeSpan PushFloor = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan UpdateInterval = TimeSpan.FromHours(6);
-    private static readonly TimeSpan FirstUpdateDelay = TimeSpan.FromSeconds(5);
-
     /// <summary>
-    /// Client dédié à 7pace, sans délai propre : SevenPaceClient borne lui-même relecture
-    /// et écriture.
+    /// Client dédié à 7pace, sans délai propre : SevenPaceClient borne lui-même ses écritures.
     /// </summary>
     private readonly HttpClient _sevenPaceHttp = new() { Timeout = Timeout.InfiniteTimeSpan };
     private readonly DayStore _days;
@@ -32,18 +29,10 @@ internal sealed class TrackingApp : ITrackingApp
     private readonly SevenPaceClient _sevenPace;
     private readonly IUpdateService _updates;
 
-    private readonly object _pushGate = new();
-    private Tracking? _lastPushed;
-    private DateTime _lastPushAt;
-
     /// <summary>Réglages actifs. Remplacés d'un bloc par un enregistrement, jamais modifiés en place.</summary>
     private volatile Profile _profile;
 
     private CancellationTokenSource? _life;
-    private Task? _updateWatch;
-    private string? _announcedVersion;
-
-    public event Action<string, string>? Pushed;
 
     public TrackingApp()
     {
@@ -55,16 +44,12 @@ internal sealed class TrackingApp : ITrackingApp
         _tracker = new GitTracker(_days, _resolver, () => _profile);
         _sevenPace = new SevenPaceClient(_sevenPaceHttp, () => _profile.SevenPaceEndpoint);
         _updates = UpdateServiceFactory.Create(AppVersion.Current);
-
-        _days.DayChanged += OnDayChanged;
-        _tracker.Changed += OnTracking;
     }
 
-    public async Task StartAsync(CancellationToken ct)
+    public Task StartAsync(CancellationToken ct)
     {
         _life = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        await _tracker.StartAsync(ct).ConfigureAwait(false);
-        _updateWatch = Task.Run(() => WatchUpdatesAsync(_life.Token), CancellationToken.None);
+        return _tracker.StartAsync(_life.Token);
     }
 
     public async Task<string> HandleAsync(string method, string paramsJson, CancellationToken ct)
@@ -77,12 +62,8 @@ internal sealed class TrackingApp : ITrackingApp
             case "bootstrap":
                 return Bootstrap();
 
-            case "loadRange":
-            {
-                var from = Text(parameters, "from");
-                var to = Text(parameters, "to");
-                return Write(new { days = _days.Range(from, to) });
-            }
+            case "pendingDay":
+                return await PendingDayAsync(ct).ConfigureAwait(false);
 
             case "saveEntry":
             {
@@ -92,36 +73,41 @@ internal sealed class TrackingApp : ITrackingApp
                     throw new DomainException("Le créneau à enregistrer est incomplet.");
                 }
                 var incoming = raw.Deserialize<Entry>(Json.Wire) ?? throw new DomainException("Le créneau à enregistrer est illisible.");
-                var entries = _days.Save(date, incoming);
-                return Write(new { date, entries });
+                Editable(date);
+                return Write(Review(date, _days.Save(date, incoming)));
             }
 
             case "deleteEntry":
             {
                 var date = Text(parameters, "date");
-                var entries = _days.Delete(date, Number(parameters, "id"));
-                return Write(new { date, entries });
+                Editable(date);
+                return Write(Review(date, _days.Delete(date, Number(parameters, "id"))));
             }
 
-            case "setPaused":
+            case "setQuick":
             {
-                if (!parameters.TryGetProperty("paused", out var flag) || (flag.ValueKind != JsonValueKind.True && flag.ValueKind != JsonValueKind.False))
+                if (!parameters.TryGetProperty("running", out var flag) || (flag.ValueKind != JsonValueKind.True && flag.ValueKind != JsonValueKind.False))
                 {
-                    throw new DomainException("État de pause manquant.");
+                    throw new DomainException("État du chrono rapide manquant.");
                 }
-                var tracking = await _tracker.SetPausedAsync(flag.GetBoolean(), ct).ConfigureAwait(false);
+                var tracking = await _tracker.SetQuickAsync(flag.GetBoolean(), ct).ConfigureAwait(false);
                 return Write(new { tracking });
             }
 
             case "submitDay":
                 return await SubmitAsync(Text(parameters, "date"), ct).ConfigureAwait(false);
 
-            case "synchronize":
-                return await SynchronizeAsync(
-                    Text(parameters, "from"),
-                    Text(parameters, "to"),
-                    parameters.TryGetProperty("apply", out var applyFlag) && applyFlag.ValueKind == JsonValueKind.True,
-                    ct).ConfigureAwait(false);
+            case "discardDay":
+            {
+                var date = Text(parameters, "date");
+                Editable(date);
+                _days.Close(date);
+                return Write(new
+                {
+                    message = $"Journée du {TimeRules.FrenchDate(TimeRules.ParseDate(date))} ignorée : rien n’a été envoyé dans 7pace.",
+                    pending = _days.Pending(Today()).Count,
+                });
+            }
 
             case "loadSettings":
             {
@@ -136,7 +122,6 @@ internal sealed class TrackingApp : ITrackingApp
 
             case "saveSettings":
                 return await SaveSettingsAsync(parameters, ct).ConfigureAwait(false);
-
 
             case "saveToken":
             {
@@ -163,27 +148,105 @@ internal sealed class TrackingApp : ITrackingApp
             case "probeToken":
                 return Write(await Probes.TokenAsync(Optional(parameters, "account"), Optional(parameters, "token"), ct).ConfigureAwait(false));
 
-
             default:
                 throw new DomainException($"Méthode inconnue : {method}.");
         }
     }
 
+    private static string Today() => TimeRules.DateKey(DateTime.Now);
+
     private string Bootstrap()
     {
-        var today = TimeRules.DateKey(DateTime.Now);
-
         var profile = _profile;
         return Write(new
         {
-            today,
-            workWindows = profile.Schedule.Windows.Select(window => new[] { window.Start, window.End }).ToArray(),
-            lunch = new[] { profile.Schedule.Lunch.Start, profile.Schedule.Lunch.End },
+            today = Today(),
             tracking = _tracker.Current,
             connections = Connections(),
-            fixedTasks = profile.FixedTasks,
             configured = profile.Configured,
+            pending = _days.Pending(Today()).Count,
         });
+    }
+
+    /// <summary>
+    /// Journée à traiter : la plus ancienne journée terminée encore en attente. Azure est
+    /// relancé avant de rendre la journée, sans quoi un Fix enfant créé après le relevé
+    /// obligerait à ressaisir un numéro déjà connu du dépôt.
+    /// </summary>
+    private async Task<string> PendingDayAsync(CancellationToken ct)
+    {
+        var pending = _days.Pending(Today());
+        if (pending.Count == 0)
+        {
+            return Write(new { date = (string?)null, pending = 0, message = "Aucune journée à envoyer : tout est à jour." });
+        }
+
+        var date = pending[0];
+        var azure = await RefreshAzureAsync(date, ct).ConfigureAwait(false);
+        var payload = Review(date, _days.Day(date));
+        return Write(new
+        {
+            payload.date,
+            payload.entries,
+            payload.holes,
+            payload.overlaps,
+            payload.totalMinutes,
+            payload.plannedMinutes,
+            payload.unassigned,
+            payload.locked,
+            pending = pending.Count,
+            azure,
+        });
+    }
+
+    /// <summary>
+    /// Relance az pour les créneaux de collecte encore à attribuer dont le Bug est connu,
+    /// cache ignoré : c'est le cas fréquent d'un Fix enfant créé après le relevé.
+    /// </summary>
+    private async Task<object> RefreshAzureAsync(string date, CancellationToken ct)
+    {
+        var bugs = new Dictionary<int, List<Entry>>();
+        foreach (var entry in _days.Day(date))
+        {
+            if (entry.SentAt is not null || !entry.Unassigned) continue;
+            if (entry.Bug is not int bug) continue;
+            if (!bugs.TryGetValue(bug, out var list)) bugs[bug] = list = new List<Entry>();
+            list.Add(entry);
+        }
+        if (bugs.Count == 0) return new { resolved = 0, failed = 0, message = (string?)null };
+
+        var resolved = 0;
+        var failed = 0;
+        foreach (var pair in bugs)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var resolution = await _resolver.ResolveBugAsync(pair.Key, force: true, ct).ConfigureAwait(false);
+            if (!resolution.Resolved || resolution.WorkItem is not int item)
+            {
+                failed++;
+                continue;
+            }
+
+            var label = string.IsNullOrWhiteSpace(resolution.Title) ? $"Fix #{item}" : resolution.Title!;
+            foreach (var entry in pair.Value)
+            {
+                var written = _days.WriteSpan(date, entry.StartMinutes, entry.EndMinutes, label, item, pair.Key, entry.Source, entry.Id);
+                if (written is not null) resolved++;
+            }
+        }
+
+        return new { resolved, failed, message = AzureMessage(resolved, failed) };
+    }
+
+    private static string AzureMessage(int resolved, int failed)
+    {
+        var done = resolved == 0
+            ? "aucune attribution trouvée"
+            : $"{resolved} créneau{(resolved > 1 ? "x" : string.Empty)} attribué{(resolved > 1 ? "s" : string.Empty)}";
+        return failed == 0
+            ? $"Azure : {done}."
+            : $"Azure : {done}, {failed} Bug{(failed > 1 ? "s" : string.Empty)} sans Fix exploitable.";
     }
 
     /// <summary>
@@ -223,213 +286,80 @@ internal sealed class TrackingApp : ITrackingApp
 
     private object Connections() => new { sevenpace = _sevenPace.State() };
 
+    /// <summary>Une journée en cours ou close n'est ni modifiable ni envoyable.</summary>
+    private void Editable(string date)
+    {
+        TimeRules.ParseDate(date);
+        if (string.CompareOrdinal(date, Today()) >= 0)
+        {
+            throw new DomainException("La journée en cours est encore en collecte : elle se traite demain matin.");
+        }
+        if (_days.IsClosed(date))
+        {
+            throw new DomainException("Cette journée est close : corrige-la directement dans 7pace.");
+        }
+    }
+
     private async Task<string> SubmitAsync(string date, CancellationToken ct)
     {
+        Editable(date);
+        if (_tracker.QuickRunning)
+        {
+            throw new DomainException("Le chrono rapide tourne encore : arrête-le, attribue son créneau, puis envoie.");
+        }
+
         var day = _days.Day(date);
         var outcome = await _sevenPace.SubmitAsync(date, day, ct).ConfigureAwait(false);
         if (outcome.Sent.Count > 0)
         {
             _days.StampSent(
                 date,
-                outcome.Sent.ToDictionary(item => item.EntryId, item => item.WorkLogId),
+                outcome.Sent.Select(item => item.EntryId).ToList(),
                 DateTimeOffset.Now.ToString("o", CultureInfo.InvariantCulture));
         }
+
+        // Journée entièrement acceptée : son détail local n'a plus de raison d'exister.
+        var closed = outcome.Ok && _days.Day(date).All(entry => entry.SentAt is not null);
+        if (closed) _days.Close(date);
 
         return Write(new
         {
             ok = outcome.Ok,
+            closed,
             sent = outcome.Sent.Select(item => new { workItem = item.WorkItem, seconds = item.Seconds }).ToArray(),
             message = outcome.Message,
+            pending = _days.Pending(Today()).Count,
         });
     }
 
-    // ---------- synchronisation avec 7pace ----------
-
-    /// <summary>Numéro de Bug tel que le suivi Git l'écrit dans le titre d'un créneau à attribuer.</summary>
-    private static readonly Regex BugInTitle = new(@"Bug #(\d{1,7})", RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
-    /// <summary>Une seule remise à plat à la fois : deux relectures concurrentes se marcheraient dessus.</summary>
-    private int _syncing;
-
-    /// <summary>
-    /// Relit 7pace sur la plage et remet le miroir en conformité. <paramref name="apply"/> faux
-    /// rend les compteurs sans rien écrire : c'est ce que l'interface montre avant de demander
-    /// confirmation.
-    /// </summary>
-    private async Task<string> SynchronizeAsync(string from, string to, bool apply, CancellationToken ct)
+    /// <summary>Journée telle que l'interface la montre : créneaux, trous, chevauchements, totaux.</summary>
+    private DayReview Review(string date, List<Entry> entries)
     {
-        if (Interlocked.Exchange(ref _syncing, 1) == 1)
-        {
-            return Write(new { ok = false, message = "Une synchronisation est déjà en cours." });
-        }
-        try
-        {
-            var reading = await _sevenPace.ReadAsync(from, to, ct).ConfigureAwait(false);
-            if (reading.Failure is not null)
-            {
-                // Relecture ratée : rien n'est écrasé ni supprimé, et Azure n'est pas relancé.
-                return Write(new { ok = false, message = reading.Failure });
-            }
+        var schedule = _profile.Schedule;
+        var total = 0;
+        foreach (var entry in entries) total += entry.EndMinutes - entry.StartMinutes;
 
-            var first = TimeRules.ParseDate(from);
-            var last = TimeRules.ParseDate(to);
-            if (last < first) (first, last) = (last, first);
-
-            var byDate = new Dictionary<string, List<WorkLog>>(StringComparer.Ordinal);
-            foreach (var log in reading.WorkLogs)
-            {
-                var day = log.StartLocal.Date;
-                if (day < first || day > last) continue;
-                var key = TimeRules.DateKey(day);
-                if (!byDate.TryGetValue(key, out var list)) byDate[key] = list = new List<WorkLog>();
-                list.Add(log);
-            }
-
-            // Les journées locales non vides comptent aussi : c'est là que se trouvent les
-            // créneaux envoyés dont 7pace n'a plus trace.
-            var dates = new SortedSet<string>(byDate.Keys, StringComparer.Ordinal);
-            foreach (var key in _days.Range(from, to).Keys) dates.Add(key);
-
-            var replaced = 0;
-            var removed = 0;
-            var imported = 0;
-            var delta = 0;
-            foreach (var date in dates)
-            {
-                var mirror = byDate.TryGetValue(date, out var logs) ? (IReadOnlyList<WorkLog>)logs : Array.Empty<WorkLog>();
-                var change = _days.Reconcile(date, mirror, apply);
-                replaced += change.Replaced;
-                removed += change.Removed;
-                imported += change.Imported;
-                delta += change.SecondsDelta;
-            }
-
-            if (apply) BeginAzureRefresh(from, to);
-
-            return Write(new
-            {
-                ok = true,
-                replaced,
-                removed,
-                imported,
-                secondsDelta = delta,
-                message = apply ? MirrorMessage(replaced, removed, imported) : null,
-            });
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _syncing, 0);
-        }
+        return new DayReview(
+            date,
+            entries,
+            DayStore.Holes(schedule, entries).Select(hole => new[] { hole.Start, hole.End }).ToArray(),
+            DayStore.Overlaps(entries).Select(overlap => new[] { overlap.Start, overlap.End }).ToArray(),
+            total,
+            schedule.PlannedMinutes(),
+            entries.Count(entry => entry.Unassigned),
+            entries.Count(entry => entry.SentAt is not null));
     }
 
-    private static string MirrorMessage(int replaced, int removed, int imported)
-    {
-        if (replaced == 0 && removed == 0 && imported == 0) return "Rien à changer : le planning correspond déjà à 7pace.";
-
-        var parts = new List<string>();
-        Tally(parts, replaced, "remplacé");
-        Tally(parts, removed, "supprimé");
-        Tally(parts, imported, "importé");
-        return $"Miroir 7pace à jour : {string.Join(", ", parts)}.";
-
-        static void Tally(List<string> parts, int count, string adjective)
-        {
-            if (count == 0) return;
-            var plural = count > 1 ? "s" : string.Empty;
-            parts.Add(parts.Count == 0
-                ? $"{count} créneau{(count > 1 ? "x" : string.Empty)} {adjective}{plural}"
-                : $"{count} {adjective}{plural}");
-        }
-    }
-
-    /// <summary>
-    /// Relance la résolution Azure des créneaux brouillon restés à attribuer, cache ignoré.
-    /// En tâche de fond : az peut prendre plusieurs minutes, le pont n'attend pas.
-    /// </summary>
-    private void BeginAzureRefresh(string from, string to)
-    {
-        var token = _life?.Token ?? CancellationToken.None;
-        if (token.IsCancellationRequested) return;
-        _ = Task.Run(() => RefreshAzureAsync(from, to, token), CancellationToken.None);
-    }
-
-    private async Task RefreshAzureAsync(string from, string to, CancellationToken ct)
-    {
-        try
-        {
-            var targets = new Dictionary<int, List<(string Date, Entry Entry)>>();
-            foreach (var pair in _days.Range(from, to))
-            {
-                foreach (var entry in pair.Value)
-                {
-                    // Un créneau envoyé est un miroir de 7pace : Azure n'a rien à y changer.
-                    if (entry.SentAt is not null) continue;
-                    if (!string.Equals(entry.Source, "git", StringComparison.Ordinal) && !string.Equals(entry.Source, "gap", StringComparison.Ordinal)) continue;
-
-                    /* Tout créneau non envoyé est revérifié, déjà attribué ou non : une
-                       attribution fausse doit pouvoir être corrigée par une synchronisation,
-                       sans quoi elle tient jusqu'à une reprise à la main. Le numéro vient du
-                       créneau ; les créneaux écrits avant ce champ ne l'ont que dans leur
-                       titre, ou plus du tout dès qu'une attribution l'a remplacé — le cache
-                       de résolution sait alors de quel Bug vient l'élément de travail. */
-                    var bug = entry.Bug;
-                    if (bug is null)
-                    {
-                        var match = BugInTitle.Match(entry.Title ?? string.Empty);
-                        bug = match.Success && int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var found)
-                            ? found
-                            : entry.WorkItem is int item ? _resolver.BugOf(item) : null;
-                        if (bug is null) continue;
-                    }
-                    if (!targets.TryGetValue(bug.Value, out var list)) targets[bug.Value] = list = new List<(string, Entry)>();
-                    list.Add((pair.Key, entry));
-                }
-            }
-            if (targets.Count == 0) return;
-
-            var resolved = 0;
-            var failed = 0;
-            foreach (var pair in targets)
-            {
-                if (ct.IsCancellationRequested) return;
-
-                var resolution = await _resolver.ResolveBugAsync(pair.Key, force: true, ct).ConfigureAwait(false);
-                if (!resolution.Resolved || resolution.WorkItem is not int item)
-                {
-                    failed++;
-                    continue;
-                }
-
-                var title = string.IsNullOrWhiteSpace(resolution.Title) ? $"Fix #{item}" : resolution.Title!;
-                foreach (var (date, entry) in pair.Value)
-                {
-                    // Déjà juste : ne rien réécrire, et ne pas le compter comme une correction.
-                    if (entry.WorkItem == item && string.Equals(entry.Title, title, StringComparison.Ordinal)) continue;
-
-                    // WriteTracked plutôt que Save : le créneau reste piloté par le suivi Git,
-                    // qui doit pouvoir continuer à prolonger sa fin.
-                    var written = _days.WriteTracked(date, entry.StartMinutes, entry.EndMinutes, "ticket", title, item, pair.Key, entry.Source, entry.Id);
-                    if (written is not null) resolved++;
-                }
-            }
-
-            Pushed?.Invoke("sync", Write(new { resolved, failed, message = AzureMessage(resolved, failed) }));
-        }
-        catch (OperationCanceledException)
-        {
-            // Fermeture en cours : rien à rapporter.
-        }
-    }
-
-    private static string AzureMessage(int resolved, int failed)
-    {
-        var done = resolved == 0
-            ? "aucune attribution à corriger"
-            : $"{resolved} attribution{(resolved > 1 ? "s" : string.Empty)} mise{(resolved > 1 ? "s" : string.Empty)} à jour";
-        return failed == 0
-            ? $"Azure : {done}."
-            : $"Azure : {done}, {failed} toujours à faire.";
-    }
+    /// <summary>Charge rendue à l'interface pour une journée : aucune règle n'y est cachée.</summary>
+    private sealed record DayReview(
+        string date,
+        List<Entry> entries,
+        int[][] holes,
+        int[][] overlaps,
+        int totalMinutes,
+        int plannedMinutes,
+        int unassigned,
+        int locked);
 
     // ---------- mises à jour de l'application ----------
 
@@ -472,59 +402,6 @@ internal sealed class TrackingApp : ITrackingApp
         return Write(new { ok = true, message = $"Version {info.Latest} téléchargée : l’application se ferme pour l’installer, puis redémarre." });
     }
 
-    /// <summary>
-    /// Vérification au démarrage puis toutes les six heures. Une version plus récente est
-    /// annoncée une seule fois par exécution, et rien n'est téléchargé sans demande.
-    /// </summary>
-    private async Task WatchUpdatesAsync(CancellationToken ct)
-    {
-        try
-        {
-            await Task.Delay(FirstUpdateDelay, ct).ConfigureAwait(false);
-            using var timer = new PeriodicTimer(UpdateInterval);
-            do
-            {
-                await AnnounceUpdateAsync(ct).ConfigureAwait(false);
-            }
-            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false));
-        }
-        catch (OperationCanceledException)
-        {
-            // Arrêt demandé.
-        }
-    }
-
-    private async Task AnnounceUpdateAsync(CancellationToken ct)
-    {
-        if (!_profile.Settings.CheckUpdates) return;
-
-        var info = await CheckUpdateAsync(ct).ConfigureAwait(false);
-        if (!info.Available || info.Latest is null) return;
-        if (string.Equals(_announcedVersion, info.Latest, StringComparison.Ordinal)) return;
-
-        _announcedVersion = info.Latest;
-        Pushed?.Invoke("update", Write(Update(info)));
-    }
-
-    private void OnDayChanged(string date, List<Entry> entries) => Pushed?.Invoke("day", Write(new { date, entries }));
-
-    /// <summary>Poussée à chaque changement d'état, et au plus une fois par demi-minute sinon.</summary>
-    private void OnTracking(Tracking tracking)
-    {
-        var comparable = tracking with { ElapsedSeconds = 0 };
-        bool push;
-        lock (_pushGate)
-        {
-            push = _lastPushed is null || !_lastPushed.Equals(comparable) || DateTime.UtcNow - _lastPushAt >= PushFloor;
-            if (push)
-            {
-                _lastPushed = comparable;
-                _lastPushAt = DateTime.UtcNow;
-            }
-        }
-        if (push) Pushed?.Invoke("tracking", Write(tracking));
-    }
-
     private static JsonDocument ParseParams(string paramsJson)
     {
         if (string.IsNullOrWhiteSpace(paramsJson)) return JsonDocument.Parse("{}");
@@ -564,22 +441,7 @@ internal sealed class TrackingApp : ITrackingApp
 
     public async ValueTask DisposeAsync()
     {
-        _tracker.Changed -= OnTracking;
-        _days.DayChanged -= OnDayChanged;
-
         _life?.Cancel();
-        if (_updateWatch is not null)
-        {
-            try
-            {
-                await _updateWatch.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                // Attendu.
-            }
-        }
-
         await _tracker.DisposeAsync().ConfigureAwait(false);
         _life?.Dispose();
         _sevenPaceHttp.Dispose();

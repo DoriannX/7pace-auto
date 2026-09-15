@@ -6,13 +6,11 @@ using System.Threading.Tasks;
 namespace SeptPaceAuto.Services;
 
 /// <summary>
-/// Contrat JSON entre le terminal et le cœur métier.
+/// Contrat JSON entre le terminal et le cœur métier. Le terminal interroge : rien ne lui
+/// est poussé, il n'a pas d'affichage à rafraîchir en continu.
 /// </summary>
 public interface ITrackingApp : IAsyncDisposable
 {
-    /// <summary>Poussées non sollicitées vers l'interface : (nom d'évènement, charge JSON).</summary>
-    event Action<string, string>? Pushed;
-
     /// <summary>Démarre la surveillance de fond (suivi Git, résolution des work items).</summary>
     Task StartAsync(CancellationToken ct);
 

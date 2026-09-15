@@ -13,8 +13,8 @@ using System.Threading.Tasks;
 
 namespace SeptPaceAuto.Services;
 
-/// <summary>Un créneau réellement accepté par 7pace, avec l'identifiant que 7pace lui a donné.</summary>
-public sealed record SentEntry(int EntryId, int WorkItem, int Seconds, string? WorkLogId);
+/// <summary>Un créneau réellement accepté par 7pace : il est verrouillé et ne repartira pas.</summary>
+public sealed record SentEntry(int EntryId, int WorkItem, int Seconds);
 
 /// <summary>
 /// Résultat d'un envoi. <paramref name="Sent"/> ne contient que les créneaux dont
@@ -22,37 +22,16 @@ public sealed record SentEntry(int EntryId, int WorkItem, int Seconds, string? W
 /// </summary>
 public sealed record SubmitOutcome(bool Ok, IReadOnlyList<SentEntry> Sent, string Message);
 
-/// <summary>Un worklog tel que 7pace le rend, l'heure de début déjà ramenée au fuseau local.</summary>
-public sealed record WorkLog(string Id, DateTime StartLocal, int Seconds, int WorkItem);
-
-/// <summary>Lecture d'une plage. <paramref name="Failure"/> non nul = rien n'est exploitable.</summary>
-public sealed record ReadOutcome(IReadOnlyList<WorkLog> WorkLogs, string? Failure);
-
 /// <summary>
-/// Échanges avec 7pace. L'authentification est vérifiée mais les droits d'écriture ne sont
-/// pas prouvés : un refus est rapporté comme un échec, jamais avalé. L'envoi écrit un worklog
-/// par créneau — c'est ce qui permet à la relecture de rester fidèle au découpage horaire.
+/// Écritures vers 7pace. L'application n'y lit jamais rien : une journée envoyée appartient
+/// à 7pace, qui devient sa seule source de vérité. Un worklog est écrit par créneau, ce qui
+/// préserve le découpage horaire validé, chevauchements compris.
 /// </summary>
 public sealed class SevenPaceClient
 {
-    /// <summary>Taille de page maximale admise par l'API v3.2.</summary>
-    private const int PageSize = 500;
-
-    /// <summary>Au-delà, la plage affichée est déraisonnable : mieux vaut le dire que boucler.</summary>
-    private const int MaxPages = 20;
-
-    /// <summary>
-    /// Budget de la relecture entière, pagination comprise. 15 s ne suffisaient pas : une
-    /// plage d'un mois demande plusieurs pages et 7pace répond lentement au premier appel,
-    /// si bien qu'une synchronisation normale échouait sur notre propre délai. Le pont JS
-    /// accorde plus de temps à cet appel (voir LONG_CALL dans web/app.js).
-    /// </summary>
-    private static readonly TimeSpan ReadBudget = TimeSpan.FromSeconds(45);
-
     /// <summary>
     /// Budget d'une écriture. C'est ce client qui borne ses appels, pas le HttpClient :
-    /// un délai de client plus court que ReadBudget faisait échouer une relecture normale
-    /// sur un délai qui n'était pas le nôtre, sans jamais nommer la vraie cause.
+    /// un délai porté par le client masquerait la vraie cause dans le message d'échec.
     /// </summary>
     private static readonly TimeSpan WriteBudget = TimeSpan.FromSeconds(20);
 
@@ -92,13 +71,12 @@ public sealed class SevenPaceClient
             return Refused($"Aucun jeton 7pace utilisable : enregistre-le dans les réglages puis recommence. Rien n’a été envoyé pour le {readable}.");
         }
 
-        var billable = day.Where(entry => !entry.Excluded).ToList();
-        if (billable.Count == 0)
+        if (day.Count == 0)
         {
             return Refused($"Aucun temps à envoyer pour le {readable} : rien n’a été envoyé.");
         }
 
-        var unassigned = billable.FirstOrDefault(entry => entry.Unassigned);
+        var unassigned = day.FirstOrDefault(entry => entry.Unassigned);
         if (unassigned is not null)
         {
             return Refused($"Le créneau de {unassigned.Start} à {unassigned.End} n’est pas attribué : rien n’a été envoyé.");
@@ -106,7 +84,7 @@ public sealed class SevenPaceClient
 
         // Un créneau déjà accepté par 7pace n'est jamais renvoyé : pas de double comptage,
         // et un envoi partiellement refusé peut être terminé plus tard.
-        var pending = billable
+        var pending = day
             .Where(entry => entry.SentAt is null && entry.Id is not null)
             .OrderBy(entry => entry.StartMinutes)
             .ToList();
@@ -120,17 +98,17 @@ public sealed class SevenPaceClient
         var day0 = TimeRules.ParseDate(date);
 
         // Un worklog par créneau : le regroupement par élément de travail écraserait le
-        // découpage horaire, que la relecture doit pouvoir retrouver à l'identique.
+        // découpage horaire validé, et rendrait les imputations simultanées illisibles.
         foreach (var entry in pending)
         {
             var seconds = (entry.EndMinutes - entry.StartMinutes) * 60;
             if (seconds <= 0) continue;
 
             var timestamp = Stamp(day0.AddMinutes(entry.StartMinutes));
-            var (failure, workLogId) = await PostAsync(endpoint, token, timestamp, seconds, entry.WorkItem!.Value, ct).ConfigureAwait(false);
+            var failure = await PostAsync(endpoint, token, timestamp, seconds, entry.WorkItem!.Value, ct).ConfigureAwait(false);
             if (failure is null)
             {
-                sent.Add(new SentEntry(entry.Id!.Value, entry.WorkItem!.Value, seconds, workLogId));
+                sent.Add(new SentEntry(entry.Id!.Value, entry.WorkItem!.Value, seconds));
             }
             else
             {
@@ -148,85 +126,19 @@ public sealed class SevenPaceClient
         var detail = string.Join(", ", failures);
         var message = sent.Count == 0
             ? $"7pace a refusé l’envoi du {readable} : {detail}. Aucun temps n’a été marqué comme envoyé — les droits d’écriture ne sont pas prouvés."
-            : $"Envoi partiel du {readable} : {sent.Count} créneau(x) acceptés, refus sur {detail}. Les créneaux refusés ne sont pas marqués comme envoyés.";
+            : $"Envoi partiel du {readable} : {sent.Count} créneau(x) acceptés, refus sur {detail}. Les créneaux refusés restent modifiables et repartiront seuls.";
         return new SubmitOutcome(false, sent, message);
     }
 
-    /// <summary>
-    /// Relit les worklogs de la plage, bornes incluses. Les filtres 7pace sont stricts :
-    /// les bornes sont donc élargies d'une seconde d'un côté et d'un jour de l'autre.
-    /// </summary>
-    public async Task<ReadOutcome> ReadAsync(string from, string to, CancellationToken ct)
-    {
-        var endpoint = _endpoint();
-        if (endpoint is null) return Unreadable("Le compte 7pace n’est pas renseigné dans les réglages.");
-
-        var token = TokenStore.Read();
-        if (token is null) return Unreadable("Aucun jeton 7pace utilisable : enregistre-le dans les réglages.");
-
-        var first = TimeRules.ParseDate(from);
-        var last = TimeRules.ParseDate(to);
-        if (last < first) (first, last) = (last, first);
-        var after = Uri.EscapeDataString(Stamp(first.AddSeconds(-1)));
-        var before = Uri.EscapeDataString(Stamp(last.AddDays(1)));
-
-        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        budget.CancelAfter(ReadBudget);
-
-        var worklogs = new List<WorkLog>();
-        var skip = 0;
-
-        for (var page = 0; page < MaxPages; page++)
-        {
-            var address = string.Concat(
-                endpoint,
-                "&$fromTimestamp=", after,
-                "&$toTimestamp=", before,
-                "&$count=", PageSize.ToString(CultureInfo.InvariantCulture),
-                "&$skip=", skip.ToString(CultureInfo.InvariantCulture));
-
-            var (reply, failure, cut) = await SendAsync(() => Signed(new HttpRequestMessage(HttpMethod.Get, address), token), budget.Token).ConfigureAwait(false);
-            if (failure is not null)
-            {
-                /* Un échec nommé — quota, réseau, refus — garde son nom : seule une coupure
-                   de notre propre budget se raconte comme un délai dépassé. */
-                var expired = cut ? Expired(budget, ct) : null;
-                return Unreadable(expired ?? $"Relecture 7pace impossible : {failure}.");
-            }
-
-            using var response = reply!;
-            if (!response.IsSuccessStatusCode)
-            {
-                return Unreadable($"Relecture 7pace impossible : {Explain(response)}.");
-            }
-
-            string body;
-            try
-            {
-                body = await response.Content.ReadAsStringAsync(budget.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                return Unreadable(Expired(budget, ct) ?? "Relecture 7pace impossible : lecture interrompue.");
-            }
-
-            if (!TryHarvest(body, worklogs, out var read)) return Unreadable("Réponse de 7pace inexploitable.");
-            if (read < PageSize) return new ReadOutcome(worklogs, null);
-            skip += read;
-        }
-
-        return Unreadable("Trop de worklogs sur cette période pour être relus en une fois : réduis la plage affichée.");
-    }
-
-    /// <summary>Failure null = 7pace a accepté ; l'identifiant peut manquer sans que ce soit un échec.</summary>
-    private async Task<(string? Failure, string? WorkLogId)> PostAsync(string endpoint, string token, string timestamp, int seconds, int workItem, CancellationToken ct)
+    /// <summary>Null = 7pace a accepté l'écriture.</summary>
+    private async Task<string?> PostAsync(string endpoint, string token, string timestamp, int seconds, int workItem, CancellationToken ct)
     {
         var payload = JsonSerializer.Serialize(new { timestamp, length = seconds, workItemId = workItem }, Json.Wire);
 
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
         budget.CancelAfter(WriteBudget);
 
-        var (reply, failure, _) = await SendAsync(
+        var (reply, failure) = await SendAsync(
             () => Signed(
                 new HttpRequestMessage(HttpMethod.Post, endpoint)
                 {
@@ -234,30 +146,16 @@ public sealed class SevenPaceClient
                 },
                 token),
             budget.Token).ConfigureAwait(false);
-        if (failure is not null) return (failure, null);
+        if (failure is not null) return failure;
 
         using var response = reply!;
-        if (!response.IsSuccessStatusCode) return (Explain(response), null);
-
-        try
-        {
-            var body = await response.Content.ReadAsStringAsync(budget.Token).ConfigureAwait(false);
-            return (null, WorkLogIdOf(body));
-        }
-        catch (OperationCanceledException)
-        {
-            // L'écriture est passée : ne pas la rapporter comme un échec parce que la
-            // lecture de la réponse a été coupée.
-            return (null, null);
-        }
+        return response.IsSuccessStatusCode ? null : Explain(response);
     }
 
     /// <summary>
     /// Envoi avec patience sur le quota 7pace. Response non nulle quand Failure est nul.
-    /// <c>Cut</c> vrai signale une annulation pendant l'appel lui-même : c'est le seul cas
-    /// que l'appelant peut présenter comme un délai dépassé.
     /// </summary>
-    private async Task<(HttpResponseMessage? Response, string? Failure, bool Cut)> SendAsync(Func<HttpRequestMessage> build, CancellationToken ct)
+    private async Task<(HttpResponseMessage? Response, string? Failure)> SendAsync(Func<HttpRequestMessage> build, CancellationToken ct)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -269,20 +167,20 @@ public sealed class SevenPaceClient
             }
             catch (OperationCanceledException)
             {
-                return (null, "aucune réponse dans le délai imparti", true);
+                return (null, "aucune réponse dans le délai imparti");
             }
             catch (HttpRequestException error)
             {
-                return (null, $"réseau indisponible ({error.Message})", false);
+                return (null, $"réseau indisponible ({error.Message})");
             }
 
-            if (response.StatusCode != HttpStatusCode.TooManyRequests) return (response, null, false);
+            if (response.StatusCode != HttpStatusCode.TooManyRequests) return (response, null);
 
             var pause = Pause(response, Backoff[Math.Min(attempt, Backoff.Length - 1)]);
             response.Dispose();
             if (attempt >= Backoff.Length - 1)
             {
-                return (null, "HTTP 429, quota 7pace atteint : réessaie dans quelques minutes", false);
+                return (null, "HTTP 429, quota 7pace atteint : réessaie dans quelques minutes");
             }
 
             try
@@ -294,7 +192,7 @@ public sealed class SevenPaceClient
                 /* Coupé pendant l'attente imposée par 7pace : c'est le quota qui a bloqué,
                    pas un silence du service. Le dire tel quel, sinon le message envoie
                    chercher une panne réseau qui n'existe pas. */
-                return (null, "HTTP 429, quota 7pace atteint : réessaie dans quelques minutes", false);
+                return (null, "HTTP 429, quota 7pace atteint : réessaie dans quelques minutes");
             }
         }
     }
@@ -306,11 +204,14 @@ public sealed class SevenPaceClient
         return request;
     }
 
-    /// <summary>Horodatage ISO 8601 en UTC, seule forme que l'API v3.2 documente.</summary>
+    /// <summary>
+    /// Horodatage tel que 7pace le range : l'heure murale locale, sans décalage ni suffixe.
+    /// Mesuré sur le compte réel — un envoi converti en UTC puis suffixé « Z » ressortait
+    /// deux heures plus tôt en septembre (Paris UTC+2). 7pace prend la valeur au pied de la
+    /// lettre ; lui donner de l'UTC déplace donc tous les créneaux.
+    /// </summary>
     private static string Stamp(DateTime local) =>
-        DateTime.SpecifyKind(local, DateTimeKind.Local)
-            .ToUniversalTime()
-            .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+        local.ToString("yyyy-MM-dd'T'HH:mm:ss.fff", CultureInfo.InvariantCulture);
 
     private static TimeSpan Pause(HttpResponseMessage response, int fallbackSeconds)
     {
@@ -320,12 +221,6 @@ public sealed class SevenPaceClient
             : TimeSpan.FromSeconds(fallbackSeconds);
     }
 
-    /// <summary>Message dédié quand c'est notre propre budget qui a coupé, pas l'appelant.</summary>
-    private static string? Expired(CancellationTokenSource budget, CancellationToken ct) =>
-        budget.IsCancellationRequested && !ct.IsCancellationRequested
-            ? $"7pace n’a pas répondu en {ReadBudget.TotalSeconds.ToString("0", CultureInfo.InvariantCulture)} s : rien n’a été modifié. Réessaie, ou réduis la plage affichée avant de synchroniser."
-            : null;
-
     private static string Explain(HttpResponseMessage response) => response.StatusCode switch
     {
         HttpStatusCode.Unauthorized => "HTTP 401, jeton refusé : enregistre un nouveau jeton dans les réglages",
@@ -333,95 +228,6 @@ public sealed class SevenPaceClient
         _ => $"HTTP {((int)response.StatusCode).ToString(CultureInfo.InvariantCulture)}",
     };
 
-    /// <summary>Identifiant du worklog créé, absent si 7pace ne rend pas son objet.</summary>
-    private static string? WorkLogIdOf(string body)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(body);
-            var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object) return null;
-            if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object) root = data;
-            return root.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String ? id.GetString() : null;
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
-
-    /// <summary>False = enveloppe inconnue. <paramref name="read"/> compte les lignes vues, pas les lignes retenues.</summary>
-    private static bool TryHarvest(string body, List<WorkLog> into, out int read)
-    {
-        read = 0;
-        JsonDocument document;
-        try
-        {
-            document = JsonDocument.Parse(body);
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-
-        using (document)
-        {
-            if (!TryRows(document.RootElement, out var rows)) return false;
-            foreach (var row in rows.EnumerateArray())
-            {
-                read++;
-                // Un worklog sans rattachement à un élément de travail n'a rien à refléter
-                // dans un planning organisé par ticket : il est ignoré.
-                if (TryWorkLog(row, out var log)) into.Add(log);
-            }
-            return true;
-        }
-    }
-
-    private static bool TryRows(JsonElement root, out JsonElement rows)
-    {
-        rows = default;
-        if (root.ValueKind == JsonValueKind.Array)
-        {
-            rows = root;
-            return true;
-        }
-        if (root.ValueKind != JsonValueKind.Object) return false;
-        if (!root.TryGetProperty("data", out var data)) return false;
-        if (data.ValueKind == JsonValueKind.Array)
-        {
-            rows = data;
-            return true;
-        }
-        if (data.ValueKind != JsonValueKind.Object) return false;
-        foreach (var name in new[] { "workLogs", "value", "data" })
-        {
-            if (data.TryGetProperty(name, out var nested) && nested.ValueKind == JsonValueKind.Array)
-            {
-                rows = nested;
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static bool TryWorkLog(JsonElement row, out WorkLog log)
-    {
-        log = null!;
-        if (row.ValueKind != JsonValueKind.Object) return false;
-        if (!row.TryGetProperty("id", out var id) || id.ValueKind != JsonValueKind.String) return false;
-        if (!row.TryGetProperty("timestamp", out var stamp) || stamp.ValueKind != JsonValueKind.String) return false;
-        if (!DateTimeOffset.TryParse(stamp.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var moment)) return false;
-        if (!row.TryGetProperty("length", out var length) || length.ValueKind != JsonValueKind.Number || !length.TryGetInt32(out var seconds) || seconds <= 0) return false;
-        if (!row.TryGetProperty("workItemId", out var item) || item.ValueKind != JsonValueKind.Number || !item.TryGetInt32(out var workItem) || workItem < 1) return false;
-
-        log = new WorkLog(id.GetString()!, moment.ToLocalTime().DateTime, seconds, workItem);
-        return true;
-    }
-
     private static SubmitOutcome Refused(string message) =>
         new(false, Array.Empty<SentEntry>(), message);
-
-    private static ReadOutcome Unreadable(string failure) =>
-        new(Array.Empty<WorkLog>(), failure);
 }

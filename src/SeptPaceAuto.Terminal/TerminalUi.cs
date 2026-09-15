@@ -5,6 +5,23 @@ using SeptPaceAuto.Services;
 
 namespace SeptPaceAuto.Terminal;
 
+/// <summary>Journée telle que le cœur la rend : créneaux, trous, chevauchements et totaux.</summary>
+internal sealed record DayView(
+    string Date,
+    List<Entry> Entries,
+    int[][] Holes,
+    int[][] Overlaps,
+    int TotalMinutes,
+    int PlannedMinutes,
+    int Unassigned,
+    int Locked,
+    int Pending,
+    string? AzureMessage);
+
+/// <summary>
+/// Unique interface : la journée terminée la plus ancienne, corrigée puis envoyée. Aucune
+/// sélection de date, aucun historique, aucune relecture de 7pace.
+/// </summary>
 internal sealed class TerminalUi
 {
     private static readonly JsonSerializerOptions Wire = new()
@@ -15,7 +32,11 @@ internal sealed class TerminalUi
 
     private readonly ITrackingApp _app;
     private readonly CancellationToken _ct;
-    private bool _paused;
+
+    private DayView? _day;
+    private bool _quickRunning;
+    private string _trackingLabel = string.Empty;
+    private string _trackingState = string.Empty;
 
     public TerminalUi(ITrackingApp app, CancellationToken ct)
     {
@@ -28,10 +49,14 @@ internal sealed class TerminalUi
         Console.WriteLine("7pace auto — terminal");
         Console.WriteLine($"Données : {TrackingAppFactory.DataFolder}");
 
+        await ReadTrackingAsync();
+        await LoadDayAsync();
+
         while (!_ct.IsCancellationRequested)
         {
             Console.WriteLine();
-            await PrintStatusAsync();
+            PrintDay();
+            PrintTracking();
             PrintMenu();
 
             var choice = Read("Choix");
@@ -43,33 +68,27 @@ internal sealed class TerminalUi
                 switch (choice)
                 {
                     case "1":
-                        await PrintStatusAsync();
-                        break;
-                    case "2":
-                        await ShowDayAsync();
-                        break;
-                    case "3":
                         await SaveEntryAsync();
                         break;
-                    case "4":
+                    case "2":
                         await DeleteEntryAsync();
                         break;
+                    case "3":
+                        await SubmitAsync();
+                        break;
+                    case "4":
+                        await DiscardAsync();
+                        break;
                     case "5":
-                        await TogglePauseAsync();
+                        await ToggleQuickAsync();
                         break;
                     case "6":
-                        await SubmitDayAsync();
-                        break;
-                    case "7":
-                        await SynchronizeAsync();
-                        break;
-                    case "8":
                         await ConfigureAsync();
                         break;
-                    case "9":
+                    case "7":
                         await SaveTokenAsync();
                         break;
-                    case "10":
+                    case "8":
                         if (await UpdateAsync()) return 0;
                         break;
                     default:
@@ -93,63 +112,129 @@ internal sealed class TerminalUi
     private static void PrintMenu()
     {
         Console.WriteLine();
-        Console.WriteLine("1. Rafraîchir l’état");
-        Console.WriteLine("2. Afficher une journée");
-        Console.WriteLine("3. Ajouter ou corriger un créneau");
-        Console.WriteLine("4. Supprimer un créneau");
-        Console.WriteLine("5. Mettre en pause ou reprendre");
-        Console.WriteLine("6. Envoyer une journée dans 7pace");
-        Console.WriteLine("7. Synchroniser avec 7pace");
-        Console.WriteLine("8. Configurer l’application");
-        Console.WriteLine("9. Enregistrer ou supprimer le jeton 7pace");
-        Console.WriteLine("10. Rechercher et installer une mise à jour");
+        Console.WriteLine("1. Ajouter ou corriger un créneau");
+        Console.WriteLine("2. Supprimer un créneau");
+        Console.WriteLine("3. Envoyer la journée dans 7pace");
+        Console.WriteLine("4. Ignorer cette journée");
+        Console.WriteLine("5. Démarrer ou arrêter le chrono rapide");
+        Console.WriteLine("6. Configurer l’application");
+        Console.WriteLine("7. Enregistrer ou supprimer le jeton 7pace");
+        Console.WriteLine("8. Rechercher et installer une mise à jour");
         Console.WriteLine("0. Quitter");
     }
 
-    private async Task PrintStatusAsync()
+    /// <summary>Charge la journée à traiter. Azure y est relancé : c'est le moment utile.</summary>
+    private async Task LoadDayAsync()
     {
-        using var result = await CallAsync("bootstrap", new { });
-        var root = result.RootElement;
-        var tracking = root.GetProperty("tracking");
-        _paused = tracking.GetProperty("paused").GetBoolean();
+        using var result = await CallAsync("pendingDay", new { });
+        _day = Parse(result.RootElement);
+        if (_day?.AzureMessage is { Length: > 0 } message) Console.WriteLine(message);
+    }
 
-        var title = Text(tracking, "title");
-        var branch = Text(tracking, "branch");
-        var state = Text(tracking, "state");
-        var elapsed = tracking.TryGetProperty("elapsedSeconds", out var rawElapsed) && rawElapsed.TryGetInt32(out var seconds)
-            ? Duration(seconds)
-            : "0 min";
+    private static DayView? Parse(JsonElement root)
+    {
+        if (!root.TryGetProperty("date", out var date) || date.ValueKind != JsonValueKind.String) return null;
 
-        Console.WriteLine($"Suivi : {TrackingLabel(state)} · {title}");
-        if (branch.Length > 0) Console.WriteLine($"Branche : {branch}");
-        Console.WriteLine($"Chrono : {elapsed}");
+        var azure = root.TryGetProperty("azure", out var node) && node.ValueKind == JsonValueKind.Object
+            ? Text(node, "message")
+            : null;
 
-        if (!root.GetProperty("configured").GetBoolean())
+        return new DayView(
+            date.GetString()!,
+            root.GetProperty("entries").Deserialize<List<Entry>>(Wire) ?? new List<Entry>(),
+            Spans(root, "holes"),
+            Spans(root, "overlaps"),
+            Number(root, "totalMinutes"),
+            Number(root, "plannedMinutes"),
+            Number(root, "unassigned"),
+            Number(root, "locked"),
+            Number(root, "pending"),
+            azure);
+    }
+
+    private static int[][] Spans(JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Array) return Array.Empty<int[]>();
+        return value.Deserialize<int[][]>(Wire) ?? Array.Empty<int[]>();
+    }
+
+    private void PrintDay()
+    {
+        if (_day is null)
         {
-            Console.WriteLine("Configuration : dépôt Git à renseigner (choix 8)");
+            Console.WriteLine("Aucune journée à envoyer : tout est à jour.");
+            return;
         }
 
-        if (root.TryGetProperty("connections", out var connections))
+        var day = _day;
+        var readable = TimeRules.FrenchDate(TimeRules.ParseDate(day.Date));
+        var queue = day.Pending > 1 ? $" · {day.Pending} journées en attente" : string.Empty;
+        Console.WriteLine($"Journée à envoyer : {readable} ({day.Date}){queue}");
+
+        if (day.Entries.Count == 0)
+        {
+            Console.WriteLine("  Aucun créneau : ajoute-en un, ou ignore la journée.");
+            return;
+        }
+
+        foreach (var entry in day.Entries.OrderBy(item => item.StartMinutes))
+        {
+            var workItem = entry.WorkItem is int item
+                ? $"#{item.ToString(CultureInfo.InvariantCulture)}"
+                : "à attribuer";
+            var locked = entry.SentAt is not null ? " · envoyé, verrouillé" : string.Empty;
+            var label = entry.Label.Length > 0 ? $" · {entry.Label}" : string.Empty;
+            Console.WriteLine($"  [{entry.Id}] {entry.Start}–{entry.End} · {workItem}{label}{locked}");
+        }
+
+        if (day.Holes.Length > 0) Console.WriteLine($"  Trous : {Spans(day.Holes)}");
+        if (day.Overlaps.Length > 0) Console.WriteLine($"  Chevauchements : {Spans(day.Overlaps)}");
+        if (day.Unassigned > 0) Console.WriteLine($"  À attribuer : {day.Unassigned} créneau(x) — l’envoi est bloqué.");
+        Console.WriteLine($"  Total : {TimeRules.Readable(day.TotalMinutes)} sur {TimeRules.Readable(day.PlannedMinutes)} prévues");
+    }
+
+    private static string Spans(int[][] spans) => string.Join(
+        ", ",
+        spans.Where(span => span.Length == 2).Select(span => $"{TimeRules.AsTime(span[0])}–{TimeRules.AsTime(span[1])}"));
+
+    private void PrintTracking()
+    {
+        Console.WriteLine($"Suivi d’aujourd’hui : {TrackingLabel(_trackingState)} · {_trackingLabel}");
+        Console.WriteLine($"Chrono rapide : {(_quickRunning ? "en cours" : "arrêté")}");
+    }
+
+    private async Task ReadTrackingAsync()
+    {
+        using var result = await CallAsync("bootstrap", new { });
+        Remember(result.RootElement.GetProperty("tracking"));
+
+        if (!result.RootElement.GetProperty("configured").GetBoolean())
+        {
+            Console.WriteLine("Configuration : dépôt Git à renseigner (choix 6)");
+        }
+        if (result.RootElement.TryGetProperty("connections", out var connections))
         {
             Console.WriteLine(Text(connections.GetProperty("sevenpace"), "label"));
         }
     }
 
-    private async Task ShowDayAsync()
+    private void Remember(JsonElement tracking)
     {
-        var date = ReadDate("Journée", Today());
-        var entries = await LoadDayAsync(date);
-        PrintDay(date, entries);
+        _quickRunning = tracking.TryGetProperty("quickRunning", out var quick) && quick.ValueKind == JsonValueKind.True;
+        _trackingLabel = Text(tracking, "label");
+        _trackingState = Text(tracking, "state");
     }
 
     private async Task SaveEntryAsync()
     {
-        var date = ReadDate("Journée", Today());
-        var entries = await LoadDayAsync(date);
-        PrintDay(date, entries);
+        if (_day is null)
+        {
+            Console.WriteLine("Rien à corriger : aucune journée en attente.");
+            return;
+        }
 
         var id = ReadOptionalPositive("Identifiant à corriger (vide pour ajouter)", null);
-        var existing = id is null ? null : entries.FirstOrDefault(entry => entry.Id == id);
+        var existing = id is null ? null : _day.Entries.FirstOrDefault(entry => entry.Id == id);
         if (id is not null && existing is null)
         {
             Console.WriteLine("Ce créneau n’existe pas dans cette journée.");
@@ -163,41 +248,38 @@ internal sealed class TerminalUi
 
         var start = ReadRequired("Début (HH:MM)", existing?.Start ?? "08:30");
         var end = ReadRequired("Fin (HH:MM)", existing?.End ?? "09:00");
-        var activity = ReadActivity(existing?.Activity ?? "ticket");
-        var title = Read("Titre", existing?.Title ?? string.Empty) ?? string.Empty;
-        var workItem = string.Equals(activity, "ticket", StringComparison.Ordinal)
-            ? ReadOptionalPositive("Fix ou Task", existing?.WorkItem)
-            : null;
+        var workItem = ReadOptionalPositive("Fix, Task ou tâche générique (vide = à attribuer)", existing?.WorkItem, zeroClears: true);
 
-        using var _ = await CallAsync("saveEntry", new
+        using var result = await CallAsync("saveEntry", new
         {
-            date,
+            date = _day.Date,
             entry = new Entry
             {
                 Id = existing?.Id,
                 Start = start,
                 End = end,
-                Activity = activity,
-                Title = title,
                 WorkItem = workItem,
+                // Le libellé vient d'Azure : il ne survit pas à une attribution faite à la main,
+                // sinon l'écran annonce encore « attribution à compléter » sur un créneau attribué.
+                Label = existing is not null && existing.WorkItem == workItem ? existing.Label : string.Empty,
             },
         });
 
+        Apply(result.RootElement);
         Console.WriteLine(existing is null ? "Créneau ajouté." : "Créneau corrigé.");
-        PrintDay(date, await LoadDayAsync(date));
     }
 
     private async Task DeleteEntryAsync()
     {
-        var date = ReadDate("Journée", Today());
-        var entries = await LoadDayAsync(date);
-        PrintDay(date, entries);
-        if (entries.Count == 0) return;
+        if (_day is null || _day.Entries.Count == 0)
+        {
+            Console.WriteLine("Rien à supprimer.");
+            return;
+        }
 
         var id = ReadOptionalPositive("Identifiant à supprimer", null);
         if (id is null) return;
-        var entry = entries.FirstOrDefault(item => item.Id == id);
-        if (entry is null)
+        if (_day.Entries.All(entry => entry.Id != id))
         {
             Console.WriteLine("Ce créneau n’existe pas dans cette journée.");
             return;
@@ -209,23 +291,48 @@ internal sealed class TerminalUi
             return;
         }
 
-        using var _ = await CallAsync("deleteEntry", new { date, id });
+        using var result = await CallAsync("deleteEntry", new { date = _day.Date, id });
+        Apply(result.RootElement);
         Console.WriteLine("Créneau supprimé.");
     }
 
-    private async Task TogglePauseAsync()
+    /// <summary>Remplace la journée affichée par celle que le cœur vient de rendre.</summary>
+    private void Apply(JsonElement root)
     {
-        using var result = await CallAsync("setPaused", new { paused = !_paused });
-        _paused = result.RootElement.GetProperty("tracking").GetProperty("paused").GetBoolean();
-        Console.WriteLine(_paused ? "Suivi mis en pause." : "Suivi repris.");
+        var updated = Parse(root);
+        if (updated is null || _day is null) return;
+        _day = updated with { Pending = _day.Pending, AzureMessage = null };
     }
 
-    private async Task SubmitDayAsync()
+    private async Task ToggleQuickAsync()
     {
-        var date = ReadDate("Journée à envoyer", Today());
-        var entries = await LoadDayAsync(date);
-        PrintDay(date, entries);
-        if (entries.Count == 0) return;
+        using var result = await CallAsync("setQuick", new { running = !_quickRunning });
+        Remember(result.RootElement.GetProperty("tracking"));
+        Console.WriteLine(_quickRunning
+            ? "Chrono rapide démarré : le créneau est « à attribuer », tu le compléteras demain."
+            : "Chrono rapide arrêté.");
+    }
+
+    private async Task SubmitAsync()
+    {
+        if (_day is null)
+        {
+            Console.WriteLine("Rien à envoyer.");
+            return;
+        }
+
+        PrintDay();
+        if (_day.Entries.Count == 0) return;
+        if (_quickRunning)
+        {
+            Console.WriteLine("Le chrono rapide tourne encore : arrête-le (choix 5) avant d’envoyer.");
+            return;
+        }
+        if (_day.Unassigned > 0)
+        {
+            Console.WriteLine("Attribue ou supprime les créneaux « à attribuer » avant d’envoyer.");
+            return;
+        }
 
         Console.WriteLine("Aucun appel 7pace ne part avant la confirmation suivante.");
         if (!Confirm("Tape ENVOYER pour confirmer", "ENVOYER"))
@@ -234,44 +341,46 @@ internal sealed class TerminalUi
             return;
         }
 
-        using var result = await CallAsync("submitDay", new { date });
-        Console.WriteLine(Text(result.RootElement, "message"));
+        using var result = await CallAsync("submitDay", new { date = _day.Date });
+        var root = result.RootElement;
+        Console.WriteLine(Text(root, "message"));
+
+        if (root.TryGetProperty("closed", out var closed) && closed.ValueKind == JsonValueKind.True)
+        {
+            Console.WriteLine("Journée close : son détail n’existe plus ici, 7pace fait désormais autorité.");
+            await LoadDayAsync();
+            return;
+        }
+
+        // Rien d'accepté : le message d'échec suffit, parler de verrouillage induirait en erreur.
+        var accepted = root.TryGetProperty("sent", out var sent) && sent.ValueKind == JsonValueKind.Array
+            ? sent.GetArrayLength()
+            : 0;
+        if (accepted > 0)
+        {
+            Console.WriteLine($"{accepted} créneau(x) verrouillés ; les refusés restent modifiables et repartiront seuls.");
+        }
+        await LoadDayAsync();
     }
 
-    private async Task SynchronizeAsync()
+    private async Task DiscardAsync()
     {
-        var from = ReadDate("Premier jour", Today());
-        var to = ReadDate("Dernier jour", from);
-
-        using var preview = await CallAsync("synchronize", new { from, to, apply = false });
-        var root = preview.RootElement;
-        if (!root.GetProperty("ok").GetBoolean())
+        if (_day is null)
         {
-            Console.WriteLine(Text(root, "message"));
+            Console.WriteLine("Rien à ignorer.");
             return;
         }
 
-        var replaced = Number(root, "replaced");
-        var removed = Number(root, "removed");
-        var imported = Number(root, "imported");
-        var delta = Number(root, "secondsDelta");
-        Console.WriteLine($"Aperçu {from} → {to} : {replaced} remplacé(s), {removed} supprimé(s), {imported} importé(s), écart {SignedDuration(delta)}.");
-
-        if (replaced == 0 && removed == 0 && imported == 0)
+        Console.WriteLine("Cette journée disparaîtra de l’application sans aucun envoi dans 7pace.");
+        if (!Confirm("Tape IGNORER pour confirmer", "IGNORER"))
         {
-            Console.WriteLine("Le planning correspond déjà à 7pace : rien à appliquer.");
+            Console.WriteLine("Abandon annulé.");
             return;
         }
 
-        Console.WriteLine("Les brouillons restent intacts; les créneaux déjà envoyés suivront 7pace.");
-        if (!Confirm("Tape APPLIQUER pour confirmer", "APPLIQUER"))
-        {
-            Console.WriteLine("Synchronisation annulée : aucun fichier n’a été modifié.");
-            return;
-        }
-
-        using var applied = await CallAsync("synchronize", new { from, to, apply = true });
-        Console.WriteLine(Text(applied.RootElement, "message"));
+        using var result = await CallAsync("discardDay", new { date = _day.Date });
+        Console.WriteLine(Text(result.RootElement, "message"));
+        await LoadDayAsync();
     }
 
     private async Task ConfigureAsync()
@@ -286,16 +395,9 @@ internal sealed class TerminalUi
         settings.AzureOrganization = Read("Organisation Azure DevOps", settings.AzureOrganization) ?? settings.AzureOrganization;
         settings.SevenPaceAccount = Read("Compte 7pace", settings.SevenPaceAccount) ?? settings.SevenPaceAccount;
         settings.WorkWindows = ReadWindows(settings.WorkWindows);
-        settings.Lunch = ReadWindow("Pause déjeuner", settings.Lunch);
-
-        Console.WriteLine("Activités récurrentes — saisis 0 comme numéro pour retirer une attribution.");
-        foreach (var activity in settings.Activities)
-        {
-            activity.Label = Read($"Libellé {activity.Key}", activity.Label) ?? activity.Label;
-            activity.WorkItem = ReadOptionalPositive($"Fix ou Task {activity.Key}", activity.WorkItem, zeroClears: true);
-        }
 
         using var saved = await CallAsync("saveSettings", new { settings });
+        Remember(saved.RootElement.GetProperty("tracking"));
         Console.WriteLine(saved.RootElement.GetProperty("configured").GetBoolean()
             ? "Configuration enregistrée; le suivi utilise déjà les nouvelles valeurs."
             : "Configuration enregistrée, mais le dépôt Git reste indisponible.");
@@ -359,15 +461,6 @@ internal sealed class TerminalUi
         return result.TryGetProperty("ok", out var ok) && ok.GetBoolean();
     }
 
-    private async Task<List<Entry>> LoadDayAsync(string date)
-    {
-        using var result = await CallAsync("loadRange", new { from = date, to = date });
-        var days = result.RootElement.GetProperty("days");
-        return days.TryGetProperty(date, out var day)
-            ? day.Deserialize<List<Entry>>(Wire) ?? new List<Entry>()
-            : new List<Entry>();
-    }
-
     private async Task<JsonDocument> CallAsync(string method, object parameters)
     {
         _ct.ThrowIfCancellationRequested();
@@ -376,79 +469,18 @@ internal sealed class TerminalUi
         return JsonDocument.Parse(response);
     }
 
-    private static void PrintDay(string date, IReadOnlyList<Entry> entries)
-    {
-        Console.WriteLine($"Journée du {date}");
-        if (entries.Count == 0)
-        {
-            Console.WriteLine("  Aucun créneau.");
-            return;
-        }
-
-        var total = 0;
-        foreach (var entry in entries.OrderBy(item => item.StartMinutes))
-        {
-            var minutes = entry.EndMinutes - entry.StartMinutes;
-            if (!entry.Excluded) total += minutes;
-            var workItem = entry.WorkItem is int item ? $" · #{item}" : string.Empty;
-            var state = entry.SentAt is not null ? "envoyé" : entry.Unassigned ? "à attribuer" : "brouillon";
-            Console.WriteLine($"  [{entry.Id}] {entry.Start}–{entry.End} · {Activities.DefaultLabel(entry.Activity)}{workItem} · {entry.Title} · {state}");
-        }
-        Console.WriteLine($"  Total imputable : {Duration(total * 60)}");
-    }
-
-    private static string ReadActivity(string current)
-    {
-        var values = new[] { "ticket", "standup", "meeting", "review", "planning", "training", "unknown", "excluded" };
-        Console.WriteLine("Activité :");
-        for (var index = 0; index < values.Length; index++)
-        {
-            Console.WriteLine($"  {index + 1}. {Activities.DefaultLabel(values[index])}");
-        }
-
-        while (true)
-        {
-            var raw = Read("Numéro", (Array.IndexOf(values, current) + 1).ToString(CultureInfo.InvariantCulture));
-            if (raw is null) return current;
-            if (int.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out var index)
-                && index >= 1 && index <= values.Length)
-            {
-                return values[index - 1];
-            }
-            Console.WriteLine("Choisis un numéro de la liste.");
-        }
-    }
-
     private static List<int[]> ReadWindows(IReadOnlyList<int[]> current)
     {
         var fallback = string.Join(',', current.Select(FormatWindow));
         while (true)
         {
-            var raw = Read("Créneaux de travail (HH:MM-HH:MM,...)", fallback);
+            var raw = Read("Horaires de travail (HH:MM-HH:MM,...)", fallback);
             if (raw is null) return current.Select(window => window.ToArray()).ToList();
             try
             {
                 return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .Select(ParseWindow)
                     .ToList();
-            }
-            catch (DomainException error)
-            {
-                Console.WriteLine(error.Message);
-            }
-        }
-    }
-
-    private static int[] ReadWindow(string label, int[] current)
-    {
-        var fallback = FormatWindow(current);
-        while (true)
-        {
-            var raw = Read($"{label} (HH:MM-HH:MM)", fallback);
-            if (raw is null) return current.ToArray();
-            try
-            {
-                return ParseWindow(raw);
             }
             catch (DomainException error)
             {
@@ -469,23 +501,6 @@ internal sealed class TerminalUi
 
     private static string FormatWindow(int[] window) =>
         window.Length == 2 ? $"{TimeRules.AsTime(window[0])}-{TimeRules.AsTime(window[1])}" : string.Empty;
-
-    private static string ReadDate(string label, string fallback)
-    {
-        while (true)
-        {
-            var value = ReadRequired(label, fallback);
-            try
-            {
-                TimeRules.ParseDate(value);
-                return value;
-            }
-            catch (DomainException error)
-            {
-                Console.WriteLine(error.Message);
-            }
-        }
-    }
 
     private static int ReadInt(string label, int current, int minimum, int maximum)
     {
@@ -508,10 +523,10 @@ internal sealed class TerminalUi
             var fallback = current?.ToString(CultureInfo.InvariantCulture);
             var raw = Read(label, fallback);
             if (raw is null) return current;
-            if (raw.Length == 0 && current is null) return null;
+            if (raw.Length == 0) return null;
             if (zeroClears && raw == "0") return null;
             if (int.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out var value) && value > 0) return value;
-            Console.WriteLine(zeroClears ? "Indique un entier positif, ou 0 pour retirer l’attribution." : "Indique un entier positif.");
+            Console.WriteLine(zeroClears ? "Indique un entier positif, ou 0 pour laisser à attribuer." : "Indique un entier positif.");
         }
     }
 
@@ -570,8 +585,6 @@ internal sealed class TerminalUi
         return string.Equals(Console.ReadLine()?.Trim(), expected, StringComparison.Ordinal);
     }
 
-    private static string Today() => TimeRules.DateKey(DateTime.Now);
-
     private static int Number(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.TryGetInt32(out var number) ? number : 0;
 
@@ -583,19 +596,8 @@ internal sealed class TerminalUi
     private static string TrackingLabel(string state) => state switch
     {
         "running" => "en cours",
-        "paused" => "en pause",
         "outside-hours" => "hors horaires",
         "no-repo" => "dépôt introuvable",
-        "not-configured" => "non configuré",
         _ => state,
     };
-
-    private static string SignedDuration(int seconds) =>
-        seconds == 0 ? "0 min" : (seconds > 0 ? "+" : "−") + Duration(Math.Abs(seconds));
-
-    private static string Duration(int seconds)
-    {
-        var minutes = Math.Max(0, seconds) / 60;
-        return TimeRules.Readable(minutes);
-    }
 }

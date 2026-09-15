@@ -14,15 +14,27 @@ internal sealed class Heartbeat
     [JsonPropertyName("at")] public string? At { get; set; }
 }
 
+/// <summary>Chrono rapide ouvert, relu au démarrage pour ne pas perdre la période en cours.</summary>
+internal sealed class QuickTimerState
+{
+    [JsonPropertyName("date")] public string? Date { get; set; }
+    [JsonPropertyName("startMinute")] public int StartMinute { get; set; }
+    [JsonPropertyName("entryId")] public int? EntryId { get; set; }
+}
+
 /// <summary>
-/// Surveillance discrète : la branche Git active, relevée dans les créneaux de travail,
+/// Surveillance discrète : la branche Git active, relevée dans les horaires de travail,
 /// alimente le créneau en cours. Aucune surveillance des applications, frappes ou inactivité.
+///
+/// Le chrono rapide « À attribuer » vit ici aussi : il partage la même cadence, et son
+/// créneau coexiste volontairement avec celui du suivi Git.
 /// </summary>
 internal sealed class GitTracker : IAsyncDisposable
 {
     private static readonly TimeSpan GapThreshold = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan GitTimeout = TimeSpan.FromSeconds(10);
     private const int MaxGapDays = 8;
+    private const string QuickLabel = "Chrono rapide · à attribuer";
 
     private readonly DayStore _days;
     private readonly WorkItemResolver _resolver;
@@ -40,14 +52,16 @@ internal sealed class GitTracker : IAsyncDisposable
     private int _blockStart;
     private (int Start, int End)? _blockWindow;
     private int? _blockEntryId;
-    private DateTime _blockStartedAt;
     private Resolution _resolution = new(null, null, null, false, null);
     private int _resolving;
 
+    // Chrono rapide en cours.
+    private string? _quickDate;
+    private int _quickStart;
+    private int? _quickEntryId;
+
     private DateTime _lastTick;
-    private bool _paused;
-    private int _frozenElapsed;
-    private Tracking _current = new(false, null, null, null, "Suivi en préparation", 0, "outside-hours");
+    private Tracking _current = new(null, null, null, "Suivi en préparation", false, "outside-hours");
 
     /// <param name="profile">Réglages actifs, relus à chaque relevé : un changement s'applique sans redémarrage.</param>
     public GitTracker(DayStore days, WorkItemResolver resolver, Func<Profile> profile)
@@ -57,40 +71,55 @@ internal sealed class GitTracker : IAsyncDisposable
         _profile = profile;
     }
 
-    /// <summary>Dernier état connu ; l'interface le reçoit aussi par poussée.</summary>
+    /// <summary>Dernier état connu du suivi.</summary>
     public Tracking Current => _current;
 
-    public event Action<Tracking>? Changed;
+    /// <summary>Un chrono rapide ouvert interdit l'envoi : sa fin n'est pas encore connue.</summary>
+    public bool QuickRunning => _quickDate is not null;
 
     public async Task StartAsync(CancellationToken ct)
     {
         _life = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _lastTick = LoadHeartbeat();
+        LoadQuick();
         await TickAsync(_life.Token).ConfigureAwait(false);
         _loop = Task.Run(() => LoopAsync(_life.Token), CancellationToken.None);
     }
 
-    public async Task<Tracking> SetPausedAsync(bool paused, CancellationToken ct)
+    /// <summary>
+    /// Démarre ou arrête le chrono rapide. Le créneau produit est « à attribuer » : aucun
+    /// numéro n'est demandé sur le moment, c'est la relecture du lendemain qui tranche.
+    /// </summary>
+    public async Task<Tracking> SetQuickAsync(bool running, CancellationToken ct)
     {
         await _turn.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            _paused = paused;
-            if (paused)
+            var now = DateTime.Now;
+            if (running)
             {
-                var now = DateTime.Now;
-                WriteBlock(TimeRules.MinuteOfDay(now), now);
-                CloseBlock(now);
-                Publish("paused", now);
+                if (_quickDate is null)
+                {
+                    _quickDate = TimeRules.DateKey(now);
+                    _quickStart = TimeRules.MinuteOfDay(now);
+                    _quickEntryId = null;
+                    SaveQuick();
+                }
+                WriteQuick(now);
             }
+            else if (_quickDate is not null)
+            {
+                WriteQuick(now);
+                _quickDate = null;
+                _quickEntryId = null;
+                SaveQuick();
+            }
+            Publish(_current.State);
         }
         finally
         {
             _turn.Release();
         }
-
-        // La reprise repart tout de suite sur la branche courante plutôt qu'au prochain relevé.
-        if (!paused) await TickAsync(ct).ConfigureAwait(false);
         return _current;
     }
 
@@ -104,8 +133,8 @@ internal sealed class GitTracker : IAsyncDisposable
         try
         {
             var now = DateTime.Now;
-            WriteBlock(TimeRules.MinuteOfDay(now), now);
-            CloseBlock(now);
+            WriteBlock(TimeRules.MinuteOfDay(now));
+            CloseBlock();
             _branch = null;
             _resolution = new Resolution(null, null, null, false, null);
         }
@@ -177,28 +206,25 @@ internal sealed class GitTracker : IAsyncDisposable
         _lastTick = now;
         SaveHeartbeat(now);
 
+        // Le chrono rapide suit sa propre horloge : il court aussi hors horaires, parce que
+        // c'est l'utilisateur qui l'a démarré.
+        WriteQuick(now);
+
         // Veille, arrêt ou plantage : le bloc est coupé et l'intervalle manquant devient
-        // un créneau « à préciser », jamais une supposition.
+        // un créneau « à attribuer », jamais une supposition.
         if (previous != default && now - previous > GapThreshold)
         {
-            CloseBlock(previous);
+            CloseBlock();
             FillGap(previous, now);
-        }
-
-        if (_paused)
-        {
-            CloseBlock(now);
-            Publish("paused", now);
-            return;
         }
 
         var minute = TimeRules.MinuteOfDay(now);
         var window = _profile().Schedule.WindowAt(minute);
         if (window is null)
         {
-            if (_blockWindow is { } closing) WriteBlock(closing.End, now);
-            CloseBlock(now);
-            Publish("outside-hours", now);
+            if (_blockWindow is { } closing) WriteBlock(closing.End);
+            CloseBlock();
+            Publish("outside-hours");
             return;
         }
 
@@ -208,9 +234,9 @@ internal sealed class GitTracker : IAsyncDisposable
             : null;
         if (branch is null)
         {
-            if (_blockWindow is { } orphan) WriteBlock(Math.Min(minute, orphan.End), now);
-            CloseBlock(now);
-            Publish("no-repo", now);
+            if (_blockWindow is { } orphan) WriteBlock(Math.Min(minute, orphan.End));
+            CloseBlock();
+            Publish("no-repo");
             return;
         }
 
@@ -226,29 +252,27 @@ internal sealed class GitTracker : IAsyncDisposable
                 var closeAt = string.Equals(_blockDate, date, StringComparison.Ordinal) && previousWindow.End == window.Value.End
                     ? minute
                     : previousWindow.End;
-                WriteBlock(closeAt, now);
+                WriteBlock(closeAt);
             }
-            CloseBlock(now);
+            CloseBlock();
             _branch = branch;
             _blockDate = date;
             _blockWindow = window;
             _blockStart = Math.Max(window.Value.Start, minute);
-            _blockStartedAt = now;
             _blockEntryId = null;
-            _frozenElapsed = 0;
             _resolution = new Resolution(WorkItemResolver.ExtractBug(branch), null, null, false, null);
         }
 
         // Le relevé ne doit jamais attendre az : le cache répond tout de suite, et une
-        // branche encore inconnue est résolue en fond, sans bloquer la pause ni le chrono.
+        // branche encore inconnue est résolue en fond, sans bloquer le relevé.
         if (!_resolution.Resolved)
         {
             if (_resolver.TryCached(branch, out var known)) _resolution = known;
             else BeginResolve(branch);
         }
 
-        WriteBlock(minute, now);
-        Publish("running", now);
+        WriteBlock(minute);
+        Publish("running");
     }
 
     /// <summary>
@@ -273,8 +297,8 @@ internal sealed class GitTracker : IAsyncDisposable
                     if (!string.Equals(_branch, branch, StringComparison.Ordinal)) return;
                     _resolution = resolution;
                     var now = DateTime.Now;
-                    WriteBlock(TimeRules.MinuteOfDay(now), now);
-                    Publish(_paused ? "paused" : "running", now);
+                    WriteBlock(TimeRules.MinuteOfDay(now));
+                    Publish(_current.State);
                 }
                 finally
                 {
@@ -283,7 +307,7 @@ internal sealed class GitTracker : IAsyncDisposable
             }
             catch (Exception error) when (error is OperationCanceledException or DomainException or IOException or UnauthorizedAccessException or JsonException)
             {
-                // L'attribution restera à faire à la main : rien n'est inventé.
+                // L'attribution restera à faire : rien n'est inventé.
             }
             finally
             {
@@ -292,44 +316,56 @@ internal sealed class GitTracker : IAsyncDisposable
         }, CancellationToken.None);
     }
 
-    private void WriteBlock(int endMinute, DateTime now)
+    private void WriteBlock(int endMinute)
     {
         if (_blockWindow is null || _branch is null) return;
         var end = Math.Min(endMinute, _blockWindow.Value.End);
         if (end <= _blockStart) return;
 
         var resolved = _resolution.Resolved && _resolution.WorkItem is int;
-        var written = _days.WriteTracked(
+        var written = _days.WriteSpan(
             _blockDate,
             _blockStart,
             end,
-            resolved ? "ticket" : "unknown",
-            EntryTitle(),
+            EntryLabel(),
             resolved ? _resolution.WorkItem : null,
             _resolution.Bug,
             "git",
             _blockEntryId);
 
-        if (written is null)
-        {
-            // Ce temps appartient déjà à un créneau saisi à la main : on repart après lui.
-            _blockStart = Math.Max(_blockStart, Math.Min(TimeRules.MinuteOfDay(now), _blockWindow.Value.End));
-            _blockStartedAt = now;
-            _blockEntryId = null;
-            return;
-        }
-        _blockEntryId = written.Id;
+        if (written is not null) _blockEntryId = written.Id;
     }
 
-    private void CloseBlock(DateTime now)
+    private void CloseBlock()
     {
-        if (_blockWindow is not null && _blockStartedAt != default)
-        {
-            _frozenElapsed = Math.Max(0, (int)(now - _blockStartedAt).TotalSeconds);
-        }
         _blockWindow = null;
         _blockEntryId = null;
-        _blockStartedAt = default;
+    }
+
+    /// <summary>
+    /// Prolonge le créneau du chrono rapide. Passé minuit, il est fermé sur sa propre
+    /// journée : une période à cheval n'existe pas dans le modèle.
+    /// </summary>
+    private void WriteQuick(DateTime now)
+    {
+        if (_quickDate is null) return;
+
+        var today = TimeRules.DateKey(now);
+        var sameDay = string.Equals(_quickDate, today, StringComparison.Ordinal);
+        var end = sameDay ? TimeRules.MinuteOfDay(now) : 24 * 60 - 1;
+
+        var written = _days.WriteSpan(_quickDate, _quickStart, end, QuickLabel, null, null, "quick", _quickEntryId);
+        if (written is not null) _quickEntryId = written.Id;
+
+        if (sameDay)
+        {
+            if (written is not null) SaveQuick();
+            return;
+        }
+
+        _quickDate = null;
+        _quickEntryId = null;
+        SaveQuick();
     }
 
     private void FillGap(DateTime from, DateTime to)
@@ -347,11 +383,10 @@ internal sealed class GitTracker : IAsyncDisposable
                 var start = Math.Max(lower, window.Start);
                 var end = Math.Min(upper, window.End);
                 if (end - start < 1) continue;
-                _days.WriteTracked(
+                _days.WriteSpan(
                     TimeRules.DateKey(cursor),
                     start,
                     end,
-                    "unknown",
                     "Intervalle à préciser (poste en veille ou arrêté)",
                     null,
                     null,
@@ -385,7 +420,7 @@ internal sealed class GitTracker : IAsyncDisposable
         return string.IsNullOrEmpty(name) ? null : "HEAD détachée";
     }
 
-    private string EntryTitle()
+    private string EntryLabel()
     {
         if (_resolution.Resolved && _resolution.WorkItem is int item)
         {
@@ -395,34 +430,26 @@ internal sealed class GitTracker : IAsyncDisposable
         return $"Branche {_branch} · attribution à compléter";
     }
 
-    private void Publish(string state, DateTime now)
+    private void Publish(string state)
     {
-        var running = string.Equals(state, "running", StringComparison.Ordinal) && _blockWindow is not null;
-        var elapsed = running && _blockStartedAt != default
-            ? Math.Max(0, (int)(now - _blockStartedAt).TotalSeconds)
-            : _frozenElapsed;
-
-        var title = state switch
+        var label = state switch
         {
-            "running" => EntryTitle(),
-            "paused" => _branch is null ? "Suivi en pause" : EntryTitle(),
-            "outside-hours" => "Hors créneaux de travail",
+            "running" => EntryLabel(),
+            "outside-hours" => "Hors horaires de travail",
             _ => _profile().Settings.RepoPath.Length == 0
                 ? "Aucun dépôt Git réglé : ouvre les réglages"
                 : "Dépôt Git introuvable",
         };
 
         var next = new Tracking(
-            _paused,
             _branch,
             _resolution.Bug,
             _resolution.Resolved ? _resolution.WorkItem : null,
-            title,
-            elapsed,
+            label,
+            _quickDate is not null,
             state);
 
         _current = next;
-        Changed?.Invoke(next);
     }
 
     private static DateTime LoadHeartbeat()
@@ -446,6 +473,42 @@ internal sealed class GitTracker : IAsyncDisposable
         }
     }
 
+    private void LoadQuick()
+    {
+        var stored = AppPaths.ReadJson<QuickTimerState>(AppPaths.Quick);
+        if (stored?.Date is null) return;
+        try
+        {
+            TimeRules.ParseDate(stored.Date);
+        }
+        catch (DomainException)
+        {
+            return;
+        }
+        _quickDate = stored.Date;
+        _quickStart = Math.Clamp(stored.StartMinute, 0, 24 * 60 - 1);
+        _quickEntryId = stored.EntryId;
+    }
+
+    private void SaveQuick()
+    {
+        try
+        {
+            AppPaths.EnsureRoot();
+            if (_quickDate is null)
+            {
+                if (File.Exists(AppPaths.Quick)) File.Delete(AppPaths.Quick);
+                return;
+            }
+            var payload = new QuickTimerState { Date = _quickDate, StartMinute = _quickStart, EntryId = _quickEntryId };
+            AppPaths.WriteAtomic(AppPaths.Quick, JsonSerializer.Serialize(payload, Json.Pretty));
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            // Le créneau est déjà écrit sur le disque : perdre l'état du chrono ne perd pas le temps.
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         _life?.Cancel();
@@ -465,7 +528,8 @@ internal sealed class GitTracker : IAsyncDisposable
         try
         {
             var now = DateTime.Now;
-            WriteBlock(TimeRules.MinuteOfDay(now), now);
+            WriteBlock(TimeRules.MinuteOfDay(now));
+            WriteQuick(now);
             SaveHeartbeat(now);
         }
         catch (Exception error) when (error is DomainException or IOException or UnauthorizedAccessException)

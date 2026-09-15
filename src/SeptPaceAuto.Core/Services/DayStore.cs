@@ -6,15 +6,28 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace SeptPaceAuto.Services;
 
-/// <summary>Ce qu'une remise à plat sur 7pace a changé, sans le détail créneau par créneau.</summary>
-public sealed record MirrorChange(int Replaced, int Removed, int Imported, int SecondsDelta);
+/// <summary>Journées closes : envoyées intégralement ou explicitement ignorées.</summary>
+internal sealed class ClosedDays
+{
+    [JsonPropertyName("dates")] public List<string> Dates { get; set; } = new();
+}
+
+/// <summary>Période des horaires de travail que ne couvre aucun créneau.</summary>
+public sealed record Hole(int Start, int End);
+
+/// <summary>Période couverte par plusieurs créneaux, signalée sans jamais être corrigée.</summary>
+public sealed record Overlap(int Start, int End);
 
 /// <summary>
-/// Journées persistées un fichier par mois, sous %LOCALAPPDATA%\7pace-auto\days\AAAA-MM.json.
-/// Toutes les mutations passent par ici : c'est le seul endroit qui valide les créneaux.
+/// Journées persistées un fichier par mois, sous %LOCALAPPDATA%\7pace-auto\days\AAAA-MM.json,
+/// et liste des journées closes. Toutes les mutations passent par ici.
+///
+/// Une journée envoyée n'est pas conservée : son détail est supprimé et seule sa date reste,
+/// pour ne jamais la reproposer. 7pace est alors la seule source de vérité.
 /// </summary>
 public sealed class DayStore
 {
@@ -22,13 +35,11 @@ public sealed class DayStore
     private readonly Func<Profile> _profile;
     private readonly string _folder;
     private readonly Dictionary<string, Dictionary<string, List<Entry>>> _months = new(StringComparer.Ordinal);
-
-    /// <summary>Journée modifiée : (date, créneaux). Déclenché hors verrou.</summary>
-    public event Action<string, List<Entry>>? DayChanged;
+    private readonly HashSet<string> _closed = new(StringComparer.Ordinal);
 
     public DayStore(Func<Profile> profile) : this(profile, AppPaths.Days) { }
 
-    /// <param name="profile">Réglages actifs : les créneaux de travail et les tâches fixes en dépendent.</param>
+    /// <param name="profile">Réglages actifs : les horaires de travail en dépendent.</param>
     public DayStore(Func<Profile> profile, string folder)
     {
         _profile = profile;
@@ -40,6 +51,11 @@ public sealed class DayStore
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             // Le dossier sera retenté à la première écriture.
+        }
+
+        foreach (var date in AppPaths.ReadJson<ClosedDays>(AppPaths.ClosedDays)?.Dates ?? new List<string>())
+        {
+            if (!string.IsNullOrWhiteSpace(date)) _closed.Add(date);
         }
     }
 
@@ -55,57 +71,70 @@ public sealed class DayStore
         }
     }
 
-    /// <summary>Journées non vides de l'intervalle, bornes incluses.</summary>
-    public Dictionary<string, List<Entry>> Range(string from, string to)
+    /// <summary>
+    /// Journées calendaires terminées qui portent encore des créneaux et ne sont pas closes,
+    /// de la plus ancienne à la plus récente. La journée en cours n'y figure jamais : elle
+    /// est encore en cours de collecte.
+    /// </summary>
+    public List<string> Pending(string today)
     {
-        var first = TimeRules.ParseDate(from);
-        var last = TimeRules.ParseDate(to);
-        if (last < first) (first, last) = (last, first);
-
-        var result = new Dictionary<string, List<Entry>>(StringComparer.Ordinal);
+        TimeRules.ParseDate(today);
+        var dates = new SortedSet<string>(StringComparer.Ordinal);
         lock (_gate)
         {
-            for (var cursor = new DateTime(first.Year, first.Month, 1); cursor <= last; cursor = cursor.AddMonths(1))
+            foreach (var month in MonthKeys())
             {
-                var month = Month(cursor.ToString("yyyy-MM", CultureInfo.InvariantCulture));
-                foreach (var pair in month)
+                foreach (var pair in Month(month))
                 {
                     if (pair.Value.Count == 0) continue;
-                    if (!DateTime.TryParseExact(pair.Key, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day)) continue;
-                    if (day < first || day > last) continue;
-                    result[pair.Key] = Snapshot(pair.Value);
+                    if (string.CompareOrdinal(pair.Key, today) >= 0) continue;
+                    if (_closed.Contains(pair.Key)) continue;
+                    dates.Add(pair.Key);
                 }
             }
         }
-        return result;
+        return dates.ToList();
+    }
+
+    /// <summary>Mois présents sur le disque, plus ceux déjà chargés en mémoire.</summary>
+    private List<string> MonthKeys()
+    {
+        var months = new SortedSet<string>(_months.Keys, StringComparer.Ordinal);
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(_folder, "*.json"))
+            {
+                var name = Path.GetFileNameWithoutExtension(file);
+                if (name.Length == 7 && DateTime.TryParseExact(name + "-01", "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+                {
+                    months.Add(name);
+                }
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            // Dossier illisible pour l'instant : on se contente de ce qui est en mémoire.
+        }
+        return months.ToList();
     }
 
     // ---------- mutations demandées par l'interface ----------
 
     /// <summary>
-    /// Crée ou remplace un créneau saisi à la main. Les refus reprennent mot pour mot
-    /// les phrases de la maquette validée. L'horodatage d'envoi appartient au magasin :
-    /// il n'est posé que par un envoi accepté, et une saisie ne peut pas l'effacer.
+    /// Crée ou corrige un créneau saisi à la main. Les chevauchements sont acceptés : 7pace
+    /// admet plusieurs imputations sur la même période, et c'est l'utilisateur qui tranche.
+    /// L'horodatage d'envoi appartient au magasin : une saisie ne peut pas l'effacer.
     /// </summary>
     public List<Entry> Save(string date, Entry incoming)
     {
         TimeRules.ParseDate(date);
-        var profile = _profile();
         List<Entry> snapshot;
         lock (_gate)
         {
             var day = DayList(date, create: true)!;
             var from = TimeRules.Minutes(incoming.Start);
             var to = TimeRules.Minutes(incoming.End);
-
             if (to <= from) throw new DomainException("La fin doit être après le début du créneau.");
-            if (!profile.Schedule.InsideWindow(from, to))
-            {
-                throw new DomainException($"Choisis un créneau {profile.Schedule.Describe()}.");
-            }
-
-            var activity = (incoming.Activity ?? string.Empty).Trim();
-            if (!Activities.Known(activity)) throw new DomainException("Ce type d’activité n’existe pas dans l’application.");
 
             Entry? existing = null;
             if (incoming.Id is int wanted)
@@ -118,19 +147,7 @@ public sealed class DayStore
                 }
             }
 
-            foreach (var other in day)
-            {
-                if (other.Id == existing?.Id) continue;
-                if (from < other.EndMinutes && to > other.StartMinutes)
-                {
-                    throw new DomainException("Ce créneau chevauche une autre activité. Ajuste les horaires pour ne pas compter deux fois le même temps.");
-                }
-            }
-
-            int? workItem = string.Equals(activity, "ticket", StringComparison.Ordinal)
-                ? incoming.WorkItem
-                : profile.WorkItemFor(activity);
-            if (string.Equals(activity, "ticket", StringComparison.Ordinal) && (workItem is null || workItem < 1))
+            if (incoming.WorkItem is int item && item < 1)
             {
                 throw new DomainException("Indique un numéro de Fix ou de Task entier et positif.");
             }
@@ -138,11 +155,9 @@ public sealed class DayStore
             var entry = existing ?? new Entry { Id = NextId(day) };
             entry.Start = TimeRules.AsTime(from);
             entry.End = TimeRules.AsTime(to);
-            entry.Activity = activity;
-            entry.Title = string.IsNullOrWhiteSpace(incoming.Title) ? profile.Label(activity) : incoming.Title.Trim();
-            entry.WorkItem = workItem;
-            // Un créneau corrigé à la main cesse d'être piloté par le suivi Git : celui-ci ne
-            // pourra plus réécrire son activité, seulement prolonger sa fin s'il l'a créé.
+            entry.WorkItem = incoming.WorkItem;
+            entry.Label = (incoming.Label ?? string.Empty).Trim();
+            // Un créneau corrigé à la main cesse d'être piloté par le suivi Git.
             entry.Source = "manual";
             // entry.SentAt n'est jamais touché ici : seul un envoi accepté le pose.
             if (existing is null) day.Add(entry);
@@ -151,7 +166,7 @@ public sealed class DayStore
             Persist(TimeRules.MonthKey(date));
             snapshot = Snapshot(day);
         }
-        Raise(date, snapshot);
+
         return snapshot;
     }
 
@@ -166,24 +181,24 @@ public sealed class DayStore
                 ?? throw new DomainException("Ce créneau n’existe plus : la journée a déjà été modifiée.");
             if (found.SentAt is not null)
             {
-                throw new DomainException("Ce créneau est déjà envoyé dans 7pace : corrige-le dans 7pace, le supprimer ici ferait perdre la trace de l’envoi.");
+                throw new DomainException("Ce créneau est déjà envoyé dans 7pace : supprime-le dans 7pace, pas ici.");
             }
             day!.Remove(found);
             Persist(TimeRules.MonthKey(date));
             snapshot = Snapshot(day);
         }
-        Raise(date, snapshot);
+
         return snapshot;
     }
 
     /// <summary>
-    /// Marque comme envoyés seulement les créneaux dont l'envoi a réellement abouti, et
-    /// retient l'identifiant que 7pace leur a donné : sans lui, la relecture ne peut pas
-    /// reconnaître le créneau et le remplacerait par un bloc regroupé.
+    /// Verrouille les créneaux dont l'envoi a réellement abouti. Un envoi partiel laisse les
+    /// autres modifiables : ils repartiront seuls, sans jamais compter deux fois le même temps.
     /// </summary>
-    public List<Entry> StampSent(string date, IReadOnlyDictionary<int, string?> workLogs, string sentAt)
+    public List<Entry> StampSent(string date, IReadOnlyCollection<int> entryIds, string sentAt)
     {
-        if (workLogs.Count == 0) return Day(date);
+        if (entryIds.Count == 0) return Day(date);
+        var wanted = new HashSet<int>(entryIds);
         List<Entry> snapshot;
         lock (_gate)
         {
@@ -191,176 +206,65 @@ public sealed class DayStore
             if (day is null) return new List<Entry>();
             foreach (var entry in day)
             {
-                if (entry.Id is not int id || !workLogs.TryGetValue(id, out var workLogId)) continue;
-                entry.SentAt = sentAt;
-                entry.WorkLogId = workLogId;
+                if (entry.Id is int id && wanted.Contains(id)) entry.SentAt = sentAt;
             }
             Persist(TimeRules.MonthKey(date));
             snapshot = Snapshot(day);
         }
-        Raise(date, snapshot);
+
         return snapshot;
     }
 
     /// <summary>
-    /// Remet la partie « miroir » de la journée en conformité avec 7pace. Les créneaux non
-    /// envoyés sont des brouillons qui appartiennent à l'application : ils ne sont jamais
-    /// touchés. Les créneaux envoyés, eux, ne sont qu'un reflet : 7pace tranche seul.
-    ///
-    /// Les garde-fous de <see cref="Save"/> — créneau de travail, chevauchement, refus de
-    /// modifier un envoi — ne s'appliquent pas ici : 7pace décrit un fait extérieur, le
-    /// refléter n'est pas une saisie.
+    /// Clôt une journée : son détail local disparaît et seule sa date est retenue, pour ne
+    /// jamais la reproposer. Utilisé après un envoi complet comme après un abandon explicite.
     /// </summary>
-    /// <param name="mirror">Worklogs 7pace de cette journée, heure de début déjà locale.</param>
-    /// <param name="apply">Faux : rien n'est écrit, seuls les compteurs sont calculés.</param>
-    public MirrorChange Reconcile(string date, IReadOnlyList<WorkLog> mirror, bool apply)
+    public void Close(string date)
     {
         TimeRules.ParseDate(date);
-        var profile = _profile();
-        List<Entry>? snapshot = null;
-        MirrorChange change;
-
         lock (_gate)
         {
-            var stored = DayList(date, create: apply && mirror.Count > 0);
-            if (stored is null && mirror.Count == 0) return new MirrorChange(0, 0, 0, 0);
-
-            // En aperçu on raisonne sur une copie : aucun état visible ne bouge.
-            var day = apply ? stored! : Snapshot(stored);
-            var before = Total(day);
-
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            var replaced = 0;
-            var removed = 0;
-            var imported = 0;
-
-            for (var index = day.Count - 1; index >= 0; index--)
-            {
-                var entry = day[index];
-                if (entry.SentAt is null) continue;   // brouillon : propriété de l'application
-
-                var match = entry.WorkLogId is null
-                    ? null
-                    : mirror.FirstOrDefault(log => string.Equals(log.Id, entry.WorkLogId, StringComparison.Ordinal));
-                if (match is null)
-                {
-                    day.RemoveAt(index);
-                    removed++;
-                    continue;
-                }
-
-                seen.Add(match.Id);
-                var (start, end) = Span(match);
-                if (string.Equals(entry.Start, start, StringComparison.Ordinal)
-                    && string.Equals(entry.End, end, StringComparison.Ordinal)
-                    && entry.WorkItem == match.WorkItem)
-                {
-                    continue;
-                }
-
-                entry.Start = start;
-                entry.End = end;
-                entry.WorkItem = match.WorkItem;
-                replaced++;
-            }
-
-            var stamp = DateTimeOffset.Now.ToString("o", CultureInfo.InvariantCulture);
-            foreach (var log in mirror)
-            {
-                if (!seen.Add(log.Id)) continue;
-
-                var (start, end) = Span(log);
-                var activity = ActivityFor(profile, log.WorkItem);
-                day.Add(new Entry
-                {
-                    Id = NextId(day),
-                    Start = start,
-                    End = end,
-                    Activity = activity,
-                    Title = string.Equals(activity, "ticket", StringComparison.Ordinal) ? $"Fix #{log.WorkItem}" : profile.Label(activity),
-                    WorkItem = log.WorkItem,
-                    Source = "7pace",
-                    SentAt = stamp,
-                    WorkLogId = log.Id,
-                });
-                imported++;
-            }
-
-            change = new MirrorChange(replaced, removed, imported, Total(day) - before);
-            if (!apply || (replaced == 0 && removed == 0 && imported == 0)) return change;
-
-            Sort(day);
+            var month = Month(TimeRules.MonthKey(date));
+            month.Remove(date);
+            _closed.Add(date);
             Persist(TimeRules.MonthKey(date));
-            snapshot = Snapshot(day);
+            PersistClosed();
         }
-
-        if (snapshot is not null) Raise(date, snapshot);
-        return change;
     }
 
-    /// <summary>Bornes locales d'un worklog, tronquées à la journée : l'application n'a pas de créneau à cheval.</summary>
-    private static (string Start, string End) Span(WorkLog log)
+    public bool IsClosed(string date)
     {
-        var from = TimeRules.MinuteOfDay(log.StartLocal);
-        var to = from + (log.Seconds + 59) / 60;
-        return (TimeRules.AsTime(from), TimeRules.AsTime(Math.Min(to, 24 * 60 - 1)));
+        lock (_gate) return _closed.Contains(date);
     }
 
-    /// <summary>Activité locale déduite du numéro : les tâches fixes se reconnaissent, le reste est du développement.</summary>
-    private static string ActivityFor(Profile profile, int workItem)
-    {
-        foreach (var pair in profile.FixedTasks)
-        {
-            if (pair.Value == workItem) return pair.Key;
-        }
-        return "ticket";
-    }
-
-    private static int Total(List<Entry> day)
-    {
-        var minutes = 0;
-        foreach (var entry in day) minutes += entry.EndMinutes - entry.StartMinutes;
-        return minutes * 60;
-    }
-
-    // ---------- mutation demandée par le suivi Git ----------
+    // ---------- mutations demandées par le suivi ----------
 
     /// <summary>
-    /// Écrit ou prolonge le bloc suivi. Le créneau est rogné sur le créneau de travail et sur
-    /// les activités déjà présentes : le suivi ne double jamais un temps saisi à la main.
-    /// Retourne le créneau écrit (null si rien n'était écrivable).
+    /// Écrit ou prolonge un créneau de collecte. Le suivi et le chrono rapide possèdent leur
+    /// propre créneau et ne regardent pas les autres : deux imputations simultanées sont
+    /// légitimes, l'utilisateur tranche le lendemain.
     /// </summary>
-    public Entry? WriteTracked(string date, int from, int to, string activity, string title, int? workItem, int? bug, string source, int? entryId)
+    /// <param name="entryId">Créneau déjà ouvert à prolonger, nul pour en créer un.</param>
+    public Entry? WriteSpan(string date, int from, int to, string label, int? workItem, int? bug, string source, int? entryId)
     {
-        List<Entry> snapshot;
+        if (to <= from) return null;
+
         Entry written;
         lock (_gate)
         {
-            var window = _profile().Schedule.WindowAt(from);
-            if (window is null) return null;
-            to = Math.Min(to, window.Value.End);
-            if (to <= from) return null;
-
             var day = DayList(date, create: true)!;
-            Entry? existing = entryId is int id ? day.FirstOrDefault(entry => entry.Id == id) : null;
+            var existing = entryId is int id ? day.FirstOrDefault(entry => entry.Id == id) : null;
             if (existing is not null && existing.SentAt is not null) return null;
 
-            foreach (var other in day)
-            {
-                if (other.Id == existing?.Id) continue;
-                if (other.StartMinutes <= from && other.EndMinutes > from) return null;   // le début est déjà occupé
-                if (other.StartMinutes > from && other.StartMinutes < to) to = other.StartMinutes;
-            }
-            if (to <= from) return null;
-
-            var trackerOwned = existing is null || string.Equals(existing.Source, "git", StringComparison.Ordinal) || string.Equals(existing.Source, "gap", StringComparison.Ordinal);
+            // Une correction à la main reprend la main : le suivi prolonge encore la fin,
+            // mais ne réécrit plus l'attribution choisie par l'utilisateur.
+            var owned = existing is null || !string.Equals(existing.Source, "manual", StringComparison.Ordinal);
             written = existing ?? new Entry { Id = NextId(day), Source = source };
             written.Start = TimeRules.AsTime(from);
             written.End = TimeRules.AsTime(Math.Max(to, existing?.EndMinutes ?? to));
-            if (trackerOwned)
+            if (owned)
             {
-                written.Activity = activity;
-                written.Title = title;
+                written.Label = label;
                 written.WorkItem = workItem;
                 written.Bug = bug ?? written.Bug;
                 written.Source = source;
@@ -369,15 +273,56 @@ public sealed class DayStore
 
             Sort(day);
             Persist(TimeRules.MonthKey(date));
-            snapshot = Snapshot(day);
         }
-        Raise(date, snapshot);
         return written.Clone();
     }
 
-    // ---------- interne ----------
+    // ---------- relecture de la journée ----------
 
-    private void Raise(string date, List<Entry> snapshot) => DayChanged?.Invoke(date, snapshot);
+    /// <summary>Périodes de travail prévues que ne couvre aucun créneau.</summary>
+    public static List<Hole> Holes(Schedule schedule, IReadOnlyList<Entry> entries)
+    {
+        var holes = new List<Hole>();
+        var covered = entries
+            .Select(entry => (Start: entry.StartMinutes, End: entry.EndMinutes))
+            .OrderBy(span => span.Start)
+            .ToList();
+
+        foreach (var window in schedule.Windows)
+        {
+            var cursor = window.Start;
+            foreach (var span in covered)
+            {
+                if (span.End <= cursor) continue;
+                if (span.Start >= window.End) break;
+                if (span.Start > cursor) holes.Add(new Hole(cursor, Math.Min(span.Start, window.End)));
+                cursor = Math.Max(cursor, span.End);
+                if (cursor >= window.End) break;
+            }
+            if (cursor < window.End) holes.Add(new Hole(cursor, window.End));
+        }
+        return holes;
+    }
+
+    /// <summary>Périodes couvertes par plusieurs créneaux, signalées sans être corrigées.</summary>
+    public static List<Overlap> Overlaps(IReadOnlyList<Entry> entries)
+    {
+        var overlaps = new List<Overlap>();
+        var ordered = entries.OrderBy(entry => entry.StartMinutes).ToList();
+        for (var index = 0; index < ordered.Count; index++)
+        {
+            for (var other = index + 1; other < ordered.Count; other++)
+            {
+                var start = Math.Max(ordered[index].StartMinutes, ordered[other].StartMinutes);
+                var end = Math.Min(ordered[index].EndMinutes, ordered[other].EndMinutes);
+                if (end <= start) continue;
+                overlaps.Add(new Overlap(start, end));
+            }
+        }
+        return overlaps;
+    }
+
+    // ---------- interne ----------
 
     private static void Sort(List<Entry> day) => day.Sort(static (left, right) =>
     {
@@ -466,7 +411,7 @@ public sealed class DayStore
         }
     }
 
-    private List<Entry> Normalize(List<Entry> raw)
+    private static List<Entry> Normalize(List<Entry> raw)
     {
         var day = new List<Entry>(raw.Count);
         var used = new HashSet<int>();
@@ -483,9 +428,8 @@ public sealed class DayStore
                 entry.Id = ++highest;
                 used.Add(highest);
             }
-            if (!Activities.Known(entry.Activity)) entry.Activity = "unknown";
             if (string.IsNullOrWhiteSpace(entry.Source)) entry.Source = "manual";
-            if (string.IsNullOrWhiteSpace(entry.Title)) entry.Title = _profile().Label(entry.Activity);
+            if (entry.WorkItem is int item && item < 1) entry.WorkItem = null;
             day.Add(entry);
         }
         Sort(day);
@@ -507,6 +451,20 @@ public sealed class DayStore
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             throw new DomainException("Impossible d’écrire la journée sur le disque : vérifie l’accès à %LOCALAPPDATA%\\7pace-auto.");
+        }
+    }
+
+    private void PersistClosed()
+    {
+        var payload = new ClosedDays { Dates = _closed.OrderBy(static date => date, StringComparer.Ordinal).ToList() };
+        try
+        {
+            AppPaths.EnsureRoot();
+            AppPaths.WriteAtomic(AppPaths.ClosedDays, JsonSerializer.Serialize(payload, Json.Pretty));
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            throw new DomainException("Impossible d’enregistrer la clôture de la journée : vérifie l’accès à %LOCALAPPDATA%\\7pace-auto.");
         }
     }
 }

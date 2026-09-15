@@ -28,6 +28,12 @@ internal static class AppPaths
     public static string WorkItems => Path.Combine(Root, "workitems.json");
     public static string Heartbeat => Path.Combine(Root, "heartbeat.json");
 
+    /// <summary>Dates closes : journées envoyées ou ignorées, dont le détail n'existe plus.</summary>
+    public static string ClosedDays => Path.Combine(Root, "closed.json");
+
+    /// <summary>Chrono rapide en cours, pour qu'un redémarrage ne perde pas la période ouverte.</summary>
+    public static string Quick => Path.Combine(Root, "quick.json");
+
     /// <summary>Jeton 7pace protégé par DPAPI, écrit depuis les réglages de l'application.</summary>
     public static string SevenPaceToken => Path.Combine(Root, "token.bin");
 
