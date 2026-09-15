@@ -19,7 +19,7 @@ using var instance = new Mutex(
 
 if (!owned)
 {
-    Console.Error.WriteLine("7pace auto utilise déjà ce profil de données. Ferme l'autre interface avant de lancer le terminal.");
+    Console.Error.WriteLine("7pace auto utilise déjà ce profil de données. Ferme l’autre terminal avant de recommencer.");
     return 1;
 }
 

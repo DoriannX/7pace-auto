@@ -1,13 +1,12 @@
 ﻿#requires -Version 5.1
 <#
 .SYNOPSIS
-    Publie 7pace auto pour Windows x64 et produit ses deux artefacts de release.
+    Publie le terminal 7pace auto pour Windows x64 et produit son archive de release.
 
 .DESCRIPTION
-    Compile le projet en autonome (self-contained), range les fichiers publiés dans
-    artifacts\SeptPaceAuto-win-x64.zip — à la racine de l'archive, c'est ce nom et cette
-    disposition qu'attend la mise à jour automatique de l'application — puis construit
-    l'installateur artifacts\7pace-auto-setup.msi via build\pack-msi.ps1.
+    Compile le terminal en autonome (self-contained) et range les fichiers publiés dans
+    artifacts\SeptPaceAuto.Terminal-win-x64.zip. L’exécutable et les scripts d’installation
+    sont à la racine, disposition vérifiée par la mise à jour automatique.
 
 .EXAMPLE
     .\build\publish.ps1
@@ -39,10 +38,10 @@ function Resolve-Chemin([string] $Chemin) {
 }
 
 $racine = Split-Path -Parent $PSScriptRoot
-$projet = Join-Path $racine 'src\SeptPaceAuto'
+$projet = Join-Path $racine 'src\SeptPaceAuto.Terminal'
 
-if (-not (Test-Path -LiteralPath (Join-Path $projet 'SeptPaceAuto.csproj'))) {
-    throw "Projet introuvable : $projet. Lance ce script depuis le dépôt 7pace-auto."
+if (-not (Test-Path -LiteralPath (Join-Path $projet 'SeptPaceAuto.Terminal.csproj'))) {
+    throw "Projet terminal introuvable : $projet. Lance ce script depuis le dépôt 7pace-auto."
 }
 
 if (-not (Get-Command 'dotnet' -ErrorAction SilentlyContinue)) {
@@ -53,7 +52,7 @@ if ([string]::IsNullOrWhiteSpace($Output)) { $Output = Join-Path $racine 'artifa
 $Output = Resolve-Chemin $Output
 
 $dossierPublication = Join-Path $Output 'publish'
-$archive = Join-Path $Output 'SeptPaceAuto-win-x64.zip'
+$archive = Join-Path $Output 'SeptPaceAuto.Terminal-win-x64.zip'
 
 # La version d'un tag Git arrive sous la forme « v1.2.0 » : MSBuild veut « 1.2.0 ».
 $versionPropre = ''
@@ -71,7 +70,7 @@ if (Test-Path -LiteralPath $dossierPublication) {
 New-Item -ItemType Directory -Path $dossierPublication -Force | Out-Null
 Write-Info $Output
 
-Write-Etape 'Publication .NET (win-x64, autonome)'
+Write-Etape 'Publication du terminal .NET (win-x64, autonome)'
 $arguments = @(
     'publish', $projet,
     '-c', 'Release',
@@ -91,13 +90,13 @@ if ($LASTEXITCODE -ne 0) {
     throw "La publication a échoué (code $LASTEXITCODE)."
 }
 
-$executable = Join-Path $dossierPublication 'SeptPaceAuto.exe'
+$executable = Join-Path $dossierPublication 'SeptPaceAuto.Terminal.exe'
 if (-not (Test-Path -LiteralPath $executable)) {
-    throw "La publication n'a pas produit SeptPaceAuto.exe dans $dossierPublication."
+    throw "La publication n'a pas produit SeptPaceAuto.Terminal.exe dans $dossierPublication."
 }
-if (-not (Test-Path -LiteralPath (Join-Path $dossierPublication 'web\index.html'))) {
-    throw "Le dossier web\ est absent de la publication : l'interface ne démarrerait pas."
-}
+
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'install.ps1') -Destination $dossierPublication -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'uninstall.ps1') -Destination $dossierPublication -Force
 
 Write-Etape 'Création de l''archive'
 if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
@@ -113,13 +112,9 @@ Add-Type -AssemblyName 'System.IO.Compression.FileSystem' -ErrorAction SilentlyC
 $taille = [math]::Round(((Get-Item -LiteralPath $archive).Length / 1MB), 1)
 $nombre = (Get-ChildItem -LiteralPath $dossierPublication -Recurse -File).Count
 
-Write-Etape 'Construction de l''installateur'
-$installateur = Join-Path $Output '7pace-auto-setup.msi'
-& (Join-Path $PSScriptRoot 'pack-msi.ps1') -Version $versionPropre -PublishDir $dossierPublication -Output $installateur
 
 Write-Host ''
 Write-Host 'Publication terminée.' -ForegroundColor Green
 Write-Info "Fichiers publiés : $nombre"
 Write-Info "Archive          : $archive ($taille Mo)"
-Write-Info "Installateur     : $installateur"
-Write-Info 'Installation : double-clic sur le MSI, ou .\build\install.ps1 pour la variante scriptée.'
+Write-Info "Installation : extraire l’archive puis lancer .\install.ps1."

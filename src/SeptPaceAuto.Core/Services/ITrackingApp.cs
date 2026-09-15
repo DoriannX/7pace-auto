@@ -6,8 +6,7 @@ using System.Threading.Tasks;
 namespace SeptPaceAuto.Services;
 
 /// <summary>
-/// Contrat stable entre le cœur et ses adaptateurs : chaque interface échange du JSON,
-/// tandis que le domaine ne connaît ni fenêtre, ni terminal, ni technologie d'affichage.
+/// Contrat JSON entre le terminal et le cœur métier.
 /// </summary>
 public interface ITrackingApp : IAsyncDisposable
 {
@@ -28,13 +27,13 @@ public interface ITrackingApp : IAsyncDisposable
 /// <summary>Point d'entrée unique du domaine.</summary>
 public static class TrackingAppFactory
 {
-    /// <summary>Profil de données partagé par tous les adaptateurs de l'application.</summary>
+    /// <summary>Profil de données du terminal.</summary>
     public static string DataFolder => AppPaths.Root;
 
-    /// <summary>Clé stable du profil, utilisée pour empêcher deux adaptateurs d'écrire simultanément.</summary>
+    /// <summary>Clé stable du profil, utilisée pour empêcher deux processus d'écrire simultanément.</summary>
     public static string DataKey { get; } = Key(DataFolder);
 
-    /// <summary>Mutex partagé par l'interface Windows et l'adaptateur terminal.</summary>
+    /// <summary>Mutex du terminal pour ce profil.</summary>
     public static string InstanceMutexName => $@"Local\SeptPaceAuto.instance.{DataKey}";
 
     public static ITrackingApp Create() => new TrackingApp();

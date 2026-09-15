@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $NomApplication = '7pace auto'
-$NomProcessus = 'SeptPaceAuto'
+$NomProcessus = 'SeptPaceAuto.Terminal'
 $CleDesinstallation = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\7pace-auto'
 
 function Write-Etape([string] $Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
@@ -73,7 +73,7 @@ if (Test-Path -LiteralPath $cible) {
         $retires++
     } catch {
         Write-Info "Suppression incomplète de $cible : $($_.Exception.Message)"
-        Write-Info 'Ferme les fenêtres restantes puis relance ce script.'
+        Write-Info 'Ferme les terminaux restants puis relance ce script.'
     } finally {
         if (Test-Path -LiteralPath $depart) { Set-Location -LiteralPath $depart }
     }

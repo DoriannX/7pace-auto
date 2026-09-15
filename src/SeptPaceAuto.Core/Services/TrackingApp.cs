@@ -12,9 +12,8 @@ using System.Threading.Tasks;
 namespace SeptPaceAuto.Services;
 
 /// <summary>
-/// Le domaine complet derrière le seam : réglages, magasin des journées, suivi Git,
-/// résolution des work items, envoi 7pace et mises à jour de l'application.
-/// Ne connaît ni fenêtre ni WebView2.
+/// Coordination du suivi Git, des journées, de la résolution des work items, de l’envoi
+/// 7pace et des mises à jour du terminal.
 /// </summary>
 internal sealed class TrackingApp : ITrackingApp
 {
@@ -132,24 +131,12 @@ internal sealed class TrackingApp : ITrackingApp
                     settings = profile.Settings,
                     connections = Connections(),
                     configured = profile.Configured,
-                    onboarded = profile.Settings.Onboarded,
                 });
             }
 
             case "saveSettings":
                 return await SaveSettingsAsync(parameters, ct).ConfigureAwait(false);
 
-            // Échelle de la vue jour : une préférence d'affichage, pas une saisie. Une
-            // valeur absente ou illisible vaut « pas de zoom » au lieu d'une erreur —
-            // l'utilisateur n'a rien à corriger dans un formulaire.
-            case "saveDayZoom":
-            {
-                var requested = parameters.TryGetProperty("dayHourPx", out var zoom)
-                    && zoom.ValueKind == JsonValueKind.Number
-                    && zoom.TryGetInt32(out var px) ? px : 0;
-                _profile = _profile.WithDayZoom(requested);
-                return Write(new { dayHourPx = _profile.Settings.DayHourPx });
-            }
 
             case "saveToken":
             {
@@ -176,12 +163,6 @@ internal sealed class TrackingApp : ITrackingApp
             case "probeToken":
                 return Write(await Probes.TokenAsync(Optional(parameters, "account"), Optional(parameters, "token"), ct).ConfigureAwait(false));
 
-            // La fenêtre et le sélecteur de dossier sont l'affaire de l'hôte ; si l'appel
-            // arrive jusqu'ici, il n'y a rien à faire.
-            case "showMini":
-            case "showMain":
-            case "chooseFolder":
-                return "{}";
 
             default:
                 throw new DomainException($"Méthode inconnue : {method}.");
@@ -202,7 +183,6 @@ internal sealed class TrackingApp : ITrackingApp
             connections = Connections(),
             fixedTasks = profile.FixedTasks,
             configured = profile.Configured,
-            onboarded = profile.Settings.Onboarded,
         });
     }
 
@@ -237,7 +217,6 @@ internal sealed class TrackingApp : ITrackingApp
             settings = saved.Settings,
             connections = Connections(),
             configured = saved.Configured,
-            onboarded = saved.Settings.Onboarded,
             tracking,
         });
     }

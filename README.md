@@ -1,92 +1,72 @@
 # 7pace auto
 
-Application Windows qui suit le temps passé sur la branche Git active, laisse corriger la
-journée, puis envoie les temps validés dans [7pace Timetracker](https://www.7pace.com/)
-après relecture.
+Application terminal Windows qui suit le temps passé sur la branche Git active, permet de
+corriger une journée, puis envoie les temps validés dans
+[7pace Timetracker](https://www.7pace.com/) après confirmation.
 
-Interface en français, deux vues : une fenêtre de gestion (planning horaire jour / semaine /
-mois) et un mini-chrono à laisser dans un coin de l'écran, toujours au-dessus des autres
-fenêtres.
+## Fonctionnalités
 
-## Ce que fait l'application
+- Relève la branche du dépôt surveillé pendant les créneaux configurés.
+- Rapproche le Bug ou PBI trouvé dans la branche de son Fix ou de sa Task via `az boards`.
+- Ajoute, corrige, exclut et supprime des créneaux, y compris sur une journée passée.
+- Prévisualise puis envoie une journée dans 7pace après confirmation explicite.
+- Synchronise les créneaux déjà envoyés avec les worklogs présents dans 7pace.
+- Recherche et installe les nouvelles versions publiées sur GitHub.
 
-- Relève la branche du dépôt surveillé pendant les créneaux de travail configurés et
-  accumule le temps sur le ticket correspondant.
-- Rapproche le numéro de Bug/PBI trouvé dans le nom de branche du Fix ou de la tâche
-  enfant, via l'Azure CLI (`az boards`) quand elle est installée et configurée.
-- Laisse créer, corriger ou exclure un créneau, y compris sur une journée passée.
-- N'envoie rien tant qu'un créneau reste à attribuer, et jamais sans confirmation
-  explicite dans l'aperçu.
-- Marque les créneaux déjà envoyés : ils deviennent non modifiables et ne repartent pas.
-
-## Ce qu'elle ne fait pas
-
-- Aucun suivi des applications, des frappes, de la navigation ou de l'inactivité : le seul
-  signal est la branche Git active.
-- Aucune télémétrie, aucun envoi vers un service tiers autre que 7pace et, pour les mises à
-  jour, l'API publique de GitHub.
+Le suivi repose uniquement sur la branche Git active. Aucune application, frappe, navigation
+ou période d’inactivité n’est observée. Les journées restent dans
+`%LOCALAPPDATA%\7pace-auto\days`.
 
 ## Installation
 
-Téléchargez `7pace-auto-setup.msi` depuis la dernière [release](../../releases/latest) et
-double-cliquez dessus : c'est tout. L'installation se fait pour votre compte, sans droits
-administrateur ni fenêtre d'élévation ; l'application apparaît ensuite dans le menu
-Démarrer et dans « Applications installées », d'où elle se désinstalle.
+Téléchargez `SeptPaceAuto.Terminal-win-x64.zip` depuis la dernière
+[release](../../releases/latest), extrayez l’archive, puis lancez :
 
-Les mises à jour se font depuis l'application elle-même, pas en réinstallant le MSI. Qui
-préfère une installation scriptée garde `SeptPaceAuto-win-x64.zip` et
-`build/install.ps1 -Zip <chemin-du-zip>` ; `build/uninstall.ps1` fait le retrait. Dans les
-deux cas, vos journées (`%LOCALAPPDATA%\7pace-auto`) survivent à la désinstallation.
+```powershell
+.\install.ps1
+```
 
-Déjà installé avec le script ? Désinstallez cette ancienne installation depuis
-« Applications installées » avant de passer au MSI ; vos données restent en place.
+Le script installe l’application dans `%LOCALAPPDATA%\Programs\7pace auto`, ajoute un
+raccourci au menu Démarrer et conserve les données lors d’une mise à jour ou d’une
+désinstallation. `uninstall.ps1` retire l’application ; `uninstall.ps1 -PurgeData` supprime
+aussi les réglages, le jeton et les journées.
 
-Prérequis : Windows 10/11 et le runtime WebView2, déjà présent sur un Windows à jour.
+Prérequis : Windows 10 ou 11. L’archive publiée inclut le runtime .NET.
 
-## Première configuration
+## Configuration
 
-Au premier lancement, l'application demande sa configuration :
+Au premier lancement, choisissez **8. Configurer l’application**, puis renseignez :
 
-| Réglage | À quoi il sert |
+| Réglage | Utilité |
 |---|---|
-| Dépôt Git surveillé | dossier local dont la branche active est relevée |
-| Intervalle de relevé | fréquence du relevé, 10 à 300 secondes |
+| Dépôt Git | dossier local dont la branche active est relevée |
+| Intervalle de relevé | fréquence du relevé, de 10 à 300 secondes |
 | Organisation Azure DevOps | URL utilisée par `az boards` pour trouver le Fix enfant |
 | Compte 7pace | sous-domaine `https://<compte>.timehub.7pace.com` |
 | Créneaux de travail et pause | heures pendant lesquelles le temps est compté |
-| Activités | vos tâches génériques (stand-up, réunion, formation…) et leur numéro |
-| Jeton 7pace | créé dans 7pace ▸ Settings ▸ Reporting & API |
+| Activités | tâches génériques et numéro de Fix ou Task associé |
 
-Le jeton est chiffré par DPAPI pour votre compte Windows et ne quitte jamais la machine.
-Les journées sont stockées en JSON dans `%LOCALAPPDATA%\7pace-auto\days`.
+Le jeton se saisit avec **9. Enregistrer ou supprimer le jeton 7pace**. Il est chiffré par
+DPAPI pour le compte Windows et ne quitte jamais la machine.
 
 ## Mises à jour
 
-L'application interroge les releases GitHub du dépôt indiqué dans les paramètres. Quand une
-version plus récente existe, un bandeau propose de l'installer : le zip est téléchargé,
-déposé à côté de l'application, puis un script remplace les fichiers et relance
-l'application. La recherche peut être désactivée dans les paramètres.
+L’entrée **10. Rechercher et installer une mise à jour** télécharge l’archive terminal,
+remplace l’installation puis relance l’application. Par sécurité, cette action fonctionne
+uniquement depuis `%LOCALAPPDATA%\Programs\7pace auto` ; une exécution issue de
+`dotnet run` doit d’abord être installée avec `build/install.ps1`.
 
 ## Développement
 
 ```powershell
-dotnet run --project src/SeptPaceAuto.Terminal # lancer le MVP interactif dans le terminal
-dotnet run --project src/SeptPaceAuto          # lancer l'interface Windows
-powershell -File build/publish.ps1             # produire le zip et 7pace-auto-setup.msi
+dotnet run --project src/SeptPaceAuto.Terminal
+powershell -File build/publish.ps1
+powershell -File build/install.ps1
 ```
 
-Le cœur (`src/SeptPaceAuto.Core`) porte le suivi Git, les journées et les intégrations.
-Les adaptateurs Windows et terminal utilisent le même contrat JSON et le même profil de
-données ; ils ne se lancent donc pas simultanément sur ce profil. Le terminal couvre la
-configuration, le suivi, la correction, l'envoi confirmé et la synchronisation 7pace.
-
-.NET 8, WinForms et WebView2 pour l'hôte Windows ; l'interface est du HTML/CSS/JS servi
-depuis `src/SeptPaceAuto/web`. Une seule dépendance NuGet : `Microsoft.Web.WebView2`.
-
-L'installateur est décrit par `build/installer/Package.wxs` (WiX 5, installé à la demande
-par `build/pack-msi.ps1`).
+Le cœur métier (`src/SeptPaceAuto.Core`) porte le suivi Git, les journées, Azure DevOps,
+7pace et les mises à jour. Le terminal (`src/SeptPaceAuto.Terminal`) est l’unique interface.
 
 ## Licence
 
-MIT, voir [LICENSE](LICENSE). La police Inter est distribuée sous SIL Open Font License,
-voir `src/SeptPaceAuto/web/inter-OFL.txt`.
+MIT, voir [LICENSE](LICENSE).

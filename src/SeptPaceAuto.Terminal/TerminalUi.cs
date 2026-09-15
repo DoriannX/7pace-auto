@@ -25,7 +25,7 @@ internal sealed class TerminalUi
 
     public async Task<int> RunAsync()
     {
-        Console.WriteLine("7pace auto — MVP terminal");
+        Console.WriteLine("7pace auto — terminal");
         Console.WriteLine($"Données : {TrackingAppFactory.DataFolder}");
 
         while (!_ct.IsCancellationRequested)
@@ -294,7 +294,6 @@ internal sealed class TerminalUi
             activity.Label = Read($"Libellé {activity.Key}", activity.Label) ?? activity.Label;
             activity.WorkItem = ReadOptionalPositive($"Fix ou Task {activity.Key}", activity.WorkItem, zeroClears: true);
         }
-        settings.Onboarded = true;
 
         using var saved = await CallAsync("saveSettings", new { settings });
         Console.WriteLine(saved.RootElement.GetProperty("configured").GetBoolean()
