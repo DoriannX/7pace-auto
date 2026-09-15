@@ -347,7 +347,7 @@ internal sealed class TerminalUi
         var notes = Text(info, "notes");
         if (notes.Length > 0) Console.WriteLine(notes);
 
-        if (!Confirm("Tape METTRE A JOUR pour confirmer", "METTRE A JOUR"))
+        if (!ConfirmYes("Installer cette version ?"))
         {
             Console.WriteLine("Mise à jour annulée.");
             return false;
@@ -555,6 +555,14 @@ internal sealed class TerminalUi
             }
             if (!char.IsControl(key.KeyChar)) value.Append(key.KeyChar);
         }
+    }
+
+    private static bool ConfirmYes(string prompt)
+    {
+        Console.Write($"{prompt} (o/N) : ");
+        var answer = Console.ReadLine()?.Trim();
+        return string.Equals(answer, "o", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(answer, "oui", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool Confirm(string prompt, string expected)
