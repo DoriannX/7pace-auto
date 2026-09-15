@@ -5,6 +5,11 @@
 /* ---------- pont avec l’hôte ---------- */
 
 const HOST_TIMEOUT = 20000;
+/* Les appels qui partent réellement sur 7pace ont leur propre budget côté hôte
+   (SevenPaceClient.ReadBudget) : le pont doit attendre plus longtemps que pour une lecture
+   locale, sinon il annonce un échec alors que la relecture ou l’envoi est encore en cours. */
+const LONG_CALL = { synchronize: 60000, submitDay: 60000 };
+const callBudget = method => LONG_CALL[method] ?? HOST_TIMEOUT;
 const host = (() => {
   const bridge = window.chrome?.webview ?? null;
   const pending = new Map();
@@ -31,11 +36,12 @@ const host = (() => {
     call(method, params = {}) {
       if (!bridge) return Promise.reject(new Error('Le pont avec l’application n’est pas disponible. Ferme puis relance 7pace auto.'));
       const id = nextId++;
+      const budget = callBudget(method);
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           pending.delete(id);
-          reject(new Error(`L’application n’a pas répondu en ${HOST_TIMEOUT / 1000} secondes (${method}). Rien n’a été enregistré ni envoyé.`));
-        }, HOST_TIMEOUT);
+          reject(new Error(`L’application n’a pas répondu en ${budget / 1000} secondes (${method}). Rien n’a été enregistré ni envoyé.`));
+        }, budget);
         pending.set(id, { resolve, reject, timer });
         bridge.postMessage(JSON.stringify({ id, method, params }));
       });
@@ -349,7 +355,7 @@ function pending(node, label) {
   };
 }
 
-/* Réussite : une phrase courte qui s’efface. Échec : la phrase de l’hôte, gardée jusqu’à ce
+/* Réussite : une phrase courte qui s’efface. Échec et attente : la phrase reste jusqu’à ce
    qu’elle soit masquée ou remplacée. Le texte des lecteurs d’écran reste porté par #announcement. */
 const feedbackTimers = new Map();
 function setFeedback(selector, message, kind = 'good') {
@@ -364,7 +370,8 @@ function setFeedback(selector, message, kind = 'good') {
     return;
   }
   node.dataset.kind = kind;
-  if (kind === 'error') return;
+  /* Une attente ne s’efface pas d’elle-même : elle est levée par celui qui l’a posée. */
+  if (kind === 'error' || kind === 'busy') return;
   /* La réussite s’efface d’elle-même : le retrait est un croisé, pas une disparition. */
   feedbackTimers.set(selector, [setTimeout(() => setFeedback(selector, ''), FEEDBACK_LIFE)]);
 }
@@ -2795,6 +2802,9 @@ $('#synchronize').addEventListener('click', async () => {
   syncing = true;
   const done = pending(trigger);
   announce('Relecture de 7pace en cours.');
+  /* La relecture part sur le réseau : une phrase la nomme dans la barre d’état tant qu’elle
+     dure, sinon la commande sans libellé est le seul signe qu’il se passe quelque chose. */
+  setFeedback('#action-feedback', 'Relecture de 7pace…', 'busy');
   try {
     const response = await host.call('synchronize', { from, to, apply: false });
     if (!response?.ok) {
@@ -2824,6 +2834,8 @@ $('#synchronize').addEventListener('click', async () => {
   } finally {
     syncing = false;
     done();
+    /* L’attente est levée ici seulement : chaque issue a déjà posé sa propre phrase. */
+    if ($('#action-feedback').dataset.kind === 'busy') clearFeedback('#action-feedback');
   }
 });
 $('#sync-apply').addEventListener('click', async () => {

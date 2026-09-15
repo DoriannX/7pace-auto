@@ -121,14 +121,23 @@ svg { flex-shrink: 0; }
 .command-slot { display: inline-flex; }
 .command-slot.wide { display: flex; width: 100%; }
 .command-slot[data-disabled="true"] { cursor: not-allowed; }
-/* Attente portée par la commande elle-même : une barre discrète, sans voile ni boucle. */
+/* Attente portée par la commande elle-même : une barre discrète qui balaie, sans voile.
+   Fixe, elle passait pour un simple filet de décoration : c’est le mouvement qui dit l’attente. */
 [data-pending="true"] { position: relative; cursor: progress; }
 [data-pending="true"]::after {
   content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
-  background: currentColor; opacity: .5; pointer-events: none;
-  animation: pending-in 140ms var(--ease) both;
+  background-color: transparent;
+  background-image: linear-gradient(90deg, transparent, currentColor 50%, transparent);
+  background-size: 40% 100%; background-repeat: no-repeat; background-position-x: 0%;
+  opacity: .5; pointer-events: none;
+  animation: pending-in 140ms var(--ease) both, pending-sweep 1000ms linear 140ms infinite;
 }
 @keyframes pending-in { from { opacity: 0; transform: scaleX(.35); } to { opacity: .5; transform: none; } }
+@keyframes pending-sweep { from { background-position-x: 0%; } to { background-position-x: 100%; } }
+/* Commande sans libellé : la barre de 2 px sous une icône de 28 px ne se voit pas.
+   L’icône elle-même tourne — le retour est à l’endroit exact du clic. */
+.icon-button[data-pending="true"] svg { transform-origin: 50% 50%; animation: pending-spin 900ms linear infinite; }
+@keyframes pending-spin { from { transform: rotate(0); } to { transform: rotate(1turn); } }
 
 .sr-only {
   position: absolute; width: 1px; height: 1px; margin: -1px;
@@ -1205,4 +1214,6 @@ body[data-handover] .app { animation: shell-out 160ms var(--ease) both; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
+  /* Sans mouvement, le balayage ne dit plus rien : la barre redevient un filet plein. */
+  [data-pending="true"]::after { background-image: none; background-color: currentColor; }
 }

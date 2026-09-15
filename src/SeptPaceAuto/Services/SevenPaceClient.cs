@@ -41,8 +41,13 @@ public sealed class SevenPaceClient
     /// <summary>Au-delà, la plage affichée est déraisonnable : mieux vaut le dire que boucler.</summary>
     private const int MaxPages = 20;
 
-    /// <summary>Le pont JS abandonne à 20 s : une relecture doit rendre la main avant.</summary>
-    private static readonly TimeSpan ReadBudget = TimeSpan.FromSeconds(15);
+    /// <summary>
+    /// Budget de la relecture entière, pagination comprise. 15 s ne suffisaient pas : une
+    /// plage d'un mois demande plusieurs pages et 7pace répond lentement au premier appel,
+    /// si bien qu'une synchronisation normale échouait sur notre propre délai. Le pont JS
+    /// accorde plus de temps à cet appel (voir LONG_CALL dans web/app.js).
+    /// </summary>
+    private static readonly TimeSpan ReadBudget = TimeSpan.FromSeconds(45);
 
     private static readonly int[] Backoff = { 5, 15, 30 };
 
@@ -173,10 +178,13 @@ public sealed class SevenPaceClient
                 "&$count=", PageSize.ToString(CultureInfo.InvariantCulture),
                 "&$skip=", skip.ToString(CultureInfo.InvariantCulture));
 
-            var (reply, failure) = await SendAsync(() => Signed(new HttpRequestMessage(HttpMethod.Get, address), token), budget.Token).ConfigureAwait(false);
+            var (reply, failure, cut) = await SendAsync(() => Signed(new HttpRequestMessage(HttpMethod.Get, address), token), budget.Token).ConfigureAwait(false);
             if (failure is not null)
             {
-                return Unreadable(Expired(budget, ct) ?? $"Relecture 7pace impossible : {failure}.");
+                /* Un échec nommé — quota, réseau, refus — garde son nom : seule une coupure
+                   de notre propre budget se raconte comme un délai dépassé. */
+                var expired = cut ? Expired(budget, ct) : null;
+                return Unreadable(expired ?? $"Relecture 7pace impossible : {failure}.");
             }
 
             using var response = reply!;
@@ -208,7 +216,7 @@ public sealed class SevenPaceClient
     {
         var payload = JsonSerializer.Serialize(new { timestamp, length = seconds, workItemId = workItem }, Json.Wire);
 
-        var (reply, failure) = await SendAsync(
+        var (reply, failure, _) = await SendAsync(
             () => Signed(
                 new HttpRequestMessage(HttpMethod.Post, endpoint)
                 {
@@ -234,8 +242,12 @@ public sealed class SevenPaceClient
         }
     }
 
-    /// <summary>Envoi avec patience sur le quota 7pace. Response non nulle quand Failure est nul.</summary>
-    private async Task<(HttpResponseMessage? Response, string? Failure)> SendAsync(Func<HttpRequestMessage> build, CancellationToken ct)
+    /// <summary>
+    /// Envoi avec patience sur le quota 7pace. Response non nulle quand Failure est nul.
+    /// <c>Cut</c> vrai signale une annulation pendant l'appel lui-même : c'est le seul cas
+    /// que l'appelant peut présenter comme un délai dépassé.
+    /// </summary>
+    private async Task<(HttpResponseMessage? Response, string? Failure, bool Cut)> SendAsync(Func<HttpRequestMessage> build, CancellationToken ct)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -247,20 +259,20 @@ public sealed class SevenPaceClient
             }
             catch (OperationCanceledException)
             {
-                return (null, "aucune réponse dans le délai imparti");
+                return (null, "aucune réponse dans le délai imparti", true);
             }
             catch (HttpRequestException error)
             {
-                return (null, $"réseau indisponible ({error.Message})");
+                return (null, $"réseau indisponible ({error.Message})", false);
             }
 
-            if (response.StatusCode != HttpStatusCode.TooManyRequests) return (response, null);
+            if (response.StatusCode != HttpStatusCode.TooManyRequests) return (response, null, false);
 
             var pause = Pause(response, Backoff[Math.Min(attempt, Backoff.Length - 1)]);
             response.Dispose();
             if (attempt >= Backoff.Length - 1)
             {
-                return (null, "HTTP 429, quota 7pace atteint : réessaie dans quelques minutes");
+                return (null, "HTTP 429, quota 7pace atteint : réessaie dans quelques minutes", false);
             }
 
             try
@@ -269,7 +281,10 @@ public sealed class SevenPaceClient
             }
             catch (OperationCanceledException)
             {
-                return (null, "aucune réponse dans le délai imparti");
+                /* Coupé pendant l'attente imposée par 7pace : c'est le quota qui a bloqué,
+                   pas un silence du service. Le dire tel quel, sinon le message envoie
+                   chercher une panne réseau qui n'existe pas. */
+                return (null, "HTTP 429, quota 7pace atteint : réessaie dans quelques minutes", false);
             }
         }
     }
@@ -298,7 +313,7 @@ public sealed class SevenPaceClient
     /// <summary>Message dédié quand c'est notre propre budget qui a coupé, pas l'appelant.</summary>
     private static string? Expired(CancellationTokenSource budget, CancellationToken ct) =>
         budget.IsCancellationRequested && !ct.IsCancellationRequested
-            ? "7pace n’a pas répondu dans le délai imparti."
+            ? $"7pace n’a pas répondu en {ReadBudget.TotalSeconds.ToString("0", CultureInfo.InvariantCulture)} s : rien n’a été modifié. Réessaie, ou réduis la plage affichée avant de synchroniser."
             : null;
 
     private static string Explain(HttpResponseMessage response) => response.StatusCode switch
