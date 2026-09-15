@@ -128,7 +128,6 @@ internal sealed class TerminalUi
         if (root.TryGetProperty("connections", out var connections))
         {
             Console.WriteLine(Text(connections.GetProperty("sevenpace"), "label"));
-            Console.WriteLine(Text(connections.GetProperty("outlook"), "label"));
         }
     }
 

@@ -20,14 +20,11 @@ Tout est local, dans `%LOCALAPPDATA%\7pace-auto` :
 
 - `windows.json` : taille et position des deux fenêtres ;
 - `webview\` : profil WebView2 (cache de l'interface) ;
-- `microsoft.json` : état de l'inscription d'application Microsoft ;
 - le jeton 7pace est saisi dans les réglages de l'application et stocké chiffré par DPAPI dans `token.bin` ; un ancien `%LOCALAPPDATA%\vault-7pace.jeton` reste lu s'il existe.
 
 ## Envoi vers 7pace
 
 Rien n'est envoyé à 7pace sans validation explicite de la journée depuis l'application.
-Aucun bloc non attribué n'est envoyé. Un envoi refusé est signalé comme un échec : il n'est
-jamais présenté comme transmis. L'intégration du calendrier Outlook n'est pas connectée
-(autorisation administrateur en attente).
+Aucun bloc non attribué n'est envoyé. Un envoi refusé est signalé comme un échec : il n'est jamais présenté comme transmis.
 
 Aucune surveillance des applications, des frappes ni de l'inactivité.

@@ -26,8 +26,6 @@ internal static class AppPaths
     public static string Days => Path.Combine(Root, "days");
     public static string Settings => Path.Combine(Root, "settings.json");
     public static string WorkItems => Path.Combine(Root, "workitems.json");
-    public static string Microsoft => Path.Combine(Root, "microsoft.json");
-    public static string MicrosoftToken => Path.Combine(Root, "microsoft-token.json");
     public static string Heartbeat => Path.Combine(Root, "heartbeat.json");
 
     /// <summary>Jeton 7pace protégé par DPAPI, écrit depuis les réglages de l'application.</summary>
