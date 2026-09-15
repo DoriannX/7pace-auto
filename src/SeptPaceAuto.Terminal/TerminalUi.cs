@@ -69,6 +69,9 @@ internal sealed class TerminalUi
                     case "9":
                         await SaveTokenAsync();
                         break;
+                    case "10":
+                        if (await UpdateAsync()) return 0;
+                        break;
                     default:
                         Console.WriteLine("Choix inconnu.");
                         break;
@@ -99,6 +102,7 @@ internal sealed class TerminalUi
         Console.WriteLine("7. Synchroniser avec 7pace");
         Console.WriteLine("8. Configurer l’application");
         Console.WriteLine("9. Enregistrer ou supprimer le jeton 7pace");
+        Console.WriteLine("10. Rechercher et installer une mise à jour");
         Console.WriteLine("0. Quitter");
     }
 
@@ -314,6 +318,47 @@ internal sealed class TerminalUi
             : token;
         using var result = await CallAsync("saveToken", new { token = clear });
         Console.WriteLine(Text(result.RootElement.GetProperty("connections").GetProperty("sevenpace"), "label"));
+    }
+
+    private async Task<bool> UpdateAsync()
+    {
+        Console.WriteLine("Recherche d’une mise à jour…");
+        using var check = await CallAsync("checkUpdate", new { });
+        var info = check.RootElement;
+        var error = Text(info, "error");
+        if (error.Length > 0)
+        {
+            Console.WriteLine(error);
+            return false;
+        }
+
+        var current = Text(info, "current");
+        var latest = Text(info, "latest");
+        if (!info.GetProperty("available").GetBoolean() || latest.Length == 0)
+        {
+            Console.WriteLine(current.Length > 0
+                ? $"Aucune mise à jour : {current} est la dernière version."
+                : "Aucune mise à jour disponible.");
+            return false;
+        }
+
+        Console.WriteLine(current.Length > 0
+            ? $"Version {latest} disponible (installée : {current})."
+            : $"Version {latest} disponible.");
+        var notes = Text(info, "notes");
+        if (notes.Length > 0) Console.WriteLine(notes);
+
+        if (!Confirm("Tape METTRE A JOUR pour confirmer", "METTRE A JOUR"))
+        {
+            Console.WriteLine("Mise à jour annulée.");
+            return false;
+        }
+
+        Console.WriteLine("Téléchargement de la nouvelle version…");
+        using var applied = await CallAsync("applyUpdate", new { });
+        var result = applied.RootElement;
+        Console.WriteLine(Text(result, "message"));
+        return result.TryGetProperty("ok", out var ok) && ok.GetBoolean();
     }
 
     private async Task<List<Entry>> LoadDayAsync(string date)
