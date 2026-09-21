@@ -83,12 +83,15 @@ internal sealed class TerminalUi
                         await ToggleQuickAsync();
                         break;
                     case "6":
-                        await ConfigureAsync();
+                        await ShowCurrentDayAsync();
                         break;
                     case "7":
-                        await SaveTokenAsync();
+                        await ConfigureAsync();
                         break;
                     case "8":
+                        await SaveTokenAsync();
+                        break;
+                    case "9":
                         if (await UpdateAsync()) return 0;
                         break;
                     default:
@@ -117,9 +120,10 @@ internal sealed class TerminalUi
         Console.WriteLine("3. Envoyer la journée dans 7pace");
         Console.WriteLine("4. Ignorer cette journée");
         Console.WriteLine("5. Démarrer ou arrêter le chrono rapide");
-        Console.WriteLine("6. Configurer l’application");
-        Console.WriteLine("7. Enregistrer ou supprimer le jeton 7pace");
-        Console.WriteLine("8. Rechercher et installer une mise à jour");
+        Console.WriteLine("6. Voir la journée en cours (lecture seule)");
+        Console.WriteLine("7. Configurer l’application");
+        Console.WriteLine("8. Enregistrer ou supprimer le jeton 7pace");
+        Console.WriteLine("9. Rechercher et installer une mise à jour");
         Console.WriteLine("0. Quitter");
     }
 
@@ -201,6 +205,34 @@ internal sealed class TerminalUi
     {
         Console.WriteLine($"Suivi d’aujourd’hui : {TrackingLabel(_trackingState)} · {_trackingLabel}");
         Console.WriteLine($"Chrono rapide : {(_quickRunning ? "en cours" : "arrêté")}");
+        Console.WriteLine("Détail de la journée en cours : choix 6 (lecture seule).");
+    }
+
+    /// <summary>
+    /// Ouvre la consultation de la journée en cours. Diagnostic pur : l'écran montre ce qui
+    /// a déjà été collecté aujourd'hui et la santé du suivi, sans jamais rien corriger ni
+    /// envoyer. La touche qui ferme l'écran y est consommée, pour ne pas devenir un choix
+    /// de menu involontaire.
+    /// </summary>
+    private async Task ShowCurrentDayAsync()
+    {
+        var screen = new CurrentDayScreen(LoadCurrentDayAsync, new ConsoleSurface());
+        await screen.RunAsync(_ct);
+
+        // Le suivi affiché sous le menu profite de la lecture qui vient d'être faite.
+        if (screen.Last is { } view)
+        {
+            _trackingState = view.Tracking.State;
+            _trackingLabel = view.Tracking.Label;
+            _quickRunning = view.Tracking.QuickRunning;
+        }
+    }
+
+    private async Task<CurrentDayView> LoadCurrentDayAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        using var result = await CallAsync("currentDay", new { });
+        return CurrentDayScreen.Parse(result.RootElement, Wire);
     }
 
     private async Task ReadTrackingAsync()
@@ -210,7 +242,7 @@ internal sealed class TerminalUi
 
         if (!result.RootElement.GetProperty("configured").GetBoolean())
         {
-            Console.WriteLine("Configuration : dépôt Git à renseigner (choix 6)");
+            Console.WriteLine("Configuration : dépôt Git à renseigner (choix 7)");
         }
         if (result.RootElement.TryGetProperty("connections", out var connections))
         {
@@ -593,12 +625,5 @@ internal sealed class TerminalUi
             ? value.GetString() ?? string.Empty
             : string.Empty;
 
-    private static string TrackingLabel(string state) => state switch
-    {
-        "running" => "en cours",
-        "outside-hours" => "hors horaires",
-        "git-unreadable" => "lecture Git en échec",
-        "no-repo" => "dépôt introuvable",
-        _ => state,
-    };
+    private static string TrackingLabel(string state) => TrackingLabels.For(state);
 }

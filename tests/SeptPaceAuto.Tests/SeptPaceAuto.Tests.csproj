@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\SeptPaceAuto.Core\SeptPaceAuto.Core.csproj" />
+    <ProjectReference Include="..\..\src\SeptPaceAuto.Terminal\SeptPaceAuto.Terminal.csproj" />
   </ItemGroup>
 
 </Project>

@@ -4,6 +4,14 @@
 
 La date calendaire actuelle. L’application y collecte automatiquement les créneaux, mais elle ne peut pas l’envoyer.
 
+## Consultation de la journée en cours
+
+Vue du terminal, en lecture seule, qui montre les créneaux déjà collectés aujourd’hui et la santé du suivi. Elle sert à vérifier que la collecte tourne ; elle ne rend la journée en cours ni modifiable ni envoyable.
+
+## Suivi figé
+
+État d’un suivi dont le dernier relevé remonte à plus de trois intervalles de relevé. La collecte ne progresse plus et la journée en cours ne reflète plus le travail réel.
+
 ## Journée en attente
 
 Une journée calendaire terminée qui contient des créneaux locaux et qui n’est ni envoyée ni ignorée. Les journées en attente sont traitées de la plus ancienne à la plus récente.

@@ -12,6 +12,7 @@ aucune correction après envoi. Une journée envoyée appartient à 7pace.
 - Relève la branche du dépôt surveillé pendant les horaires configurés.
 - Rapproche le Bug ou PBI trouvé dans la branche de son Fix ou de sa Task via `az boards`.
 - Un chrono rapide facultatif ouvre un créneau « à attribuer », même pendant un ticket suivi.
+- La journée en cours se consulte en lecture seule, pour vérifier que la collecte tourne.
 - Le lendemain matin, une notification signale la plus ancienne journée terminée en attente.
 - Le terminal montre cette journée seule : créneaux, trous, chevauchements et total.
 - Après correction, l’envoi écrit un worklog par créneau puis clôt la journée.
@@ -26,6 +27,8 @@ Le vocabulaire du domaine : [CONTEXT.md](CONTEXT.md).
 ## Règles du flux
 
 - La journée en cours est collectée mais jamais envoyable : elle se traite le lendemain.
+- Elle reste consultable à tout moment, en lecture seule : créneaux déjà enregistrés, état
+  du suivi et fraîcheur du dernier relevé, sans jamais pouvoir être corrigée ni envoyée.
 - Les journées en attente sont proposées de la plus ancienne à la plus récente.
 - Un créneau « à attribuer », ou un chrono rapide encore ouvert, bloque tout l’envoi.
 - Les chevauchements sont autorisés et signalés : 7pace accepte des imputations simultanées.
@@ -52,7 +55,7 @@ Prérequis : Windows 10 ou 11. L’archive publiée inclut le runtime .NET.
 
 ## Configuration
 
-Au premier lancement, choisissez **6. Configurer l’application**, puis renseignez :
+Au premier lancement, choisissez **7. Configurer l’application**, puis renseignez :
 
 | Réglage | Utilité |
 |---|---|
@@ -65,12 +68,22 @@ Au premier lancement, choisissez **6. Configurer l’application**, puis renseig
 Aucun catalogue d’activités n’est tenu par l’application : les numéros des tâches génériques
 (réunion, aide, formation…) se saisissent au moment d’attribuer le créneau.
 
-Le jeton se saisit avec **7. Enregistrer ou supprimer le jeton 7pace**. Il est chiffré par
+Le jeton se saisit avec **8. Enregistrer ou supprimer le jeton 7pace**. Il est chiffré par
 DPAPI pour le compte Windows et ne quitte jamais la machine.
+
+## Vérifier que la collecte tourne
+
+L’entrée **6. Voir la journée en cours (lecture seule)** montre ce qui a déjà été
+enregistré aujourd’hui — heures, ticket résolu, libellé, origine du créneau — ainsi que
+l’état réel du suivi : branche lue, créneau en cours, date du dernier relevé et dernière
+erreur rencontrée. Un suivi qui ne relève plus est annoncé comme figé.
+
+L’écran se rafraîchit toutes les deux secondes et se ferme à la première touche frappée.
+Rien n’y est modifiable : la journée en cours se corrige et s’envoie le lendemain matin.
 
 ## Mises à jour
 
-L’entrée **8. Rechercher et installer une mise à jour** télécharge l’archive terminal,
+L’entrée **9. Rechercher et installer une mise à jour** télécharge l’archive terminal,
 remplace l’installation puis relance l’application. Par sécurité, cette action fonctionne
 uniquement depuis `%LOCALAPPDATA%\Programs\7pace auto` ; une exécution issue de
 `dotnet run` doit d’abord être installée avec `build/install.ps1`.
@@ -79,6 +92,7 @@ uniquement depuis `%LOCALAPPDATA%\Programs\7pace auto` ; une exécution issue de
 
 ```powershell
 dotnet run --project src/SeptPaceAuto.Terminal
+dotnet test tests/SeptPaceAuto.Tests
 powershell -File build/publish.ps1
 powershell -File build/install.ps1
 ```

@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using System.Threading;
@@ -52,6 +53,14 @@ internal sealed class GitTracker : IAsyncDisposable
     /// <summary>Début de la série de lectures Git ratées en cours, <c>default</c> quand la lecture va bien.</summary>
     private DateTime _unreadableSince;
 
+    // Fraîcheur du suivi, tenue à jour pour la consultation en lecture seule.
+    private DateTime? _observedAt;
+    private DateTime? _branchAt;
+    private DateTime? _writtenAt;
+    private int? _blockEnd;
+    private string? _lastError;
+    private DateTime? _lastErrorAt;
+
     // Chrono rapide en cours.
     private string? _quickDate;
     private int _quickStart;
@@ -62,7 +71,13 @@ internal sealed class GitTracker : IAsyncDisposable
 
     /// <param name="profile">Réglages actifs, relus à chaque relevé : un changement s'applique sans redémarrage.</param>
     public GitTracker(DayStore days, IWorkItemResolver resolver, Func<Profile> profile)
-        : this(days, resolver, profile, new GitBranchReader(), static () => DateTime.Now, new FileTrackerState())
+        : this(days, resolver, profile, static () => DateTime.Now)
+    {
+    }
+
+    /// <param name="clock">Horloge du domaine, partagée avec le reste de l'application.</param>
+    public GitTracker(DayStore days, IWorkItemResolver resolver, Func<Profile> profile, Func<DateTime> clock)
+        : this(days, resolver, profile, new GitBranchReader(), clock, new FileTrackerState())
     {
     }
 
@@ -87,6 +102,32 @@ internal sealed class GitTracker : IAsyncDisposable
 
     /// <summary>Dernier état connu du suivi.</summary>
     public Tracking Current => _current;
+
+    /// <summary>
+    /// Fraîcheur du suivi. Lecture pure : aucun relevé n'est déclenché, rien n'est écrit.
+    /// Les champs sont lus sans verrou, ce qui suffit à un écran rafraîchi en continu.
+    /// </summary>
+    public TrackingHealth Health
+    {
+        get
+        {
+            var running = _blockWindow is not null;
+            return new TrackingHealth(
+                Stamp(_observedAt),
+                Stamp(_branchAt),
+                Stamp(_writtenAt),
+                running ? _blockDate : null,
+                running ? _blockStart : null,
+                running ? _blockEnd : null,
+                _lastError,
+                Stamp(_lastErrorAt),
+                _branches.Available,
+                (int)Period().TotalSeconds * 3);
+        }
+    }
+
+    private static string? Stamp(DateTime? moment) =>
+        moment is DateTime value ? value.ToString("o", CultureInfo.InvariantCulture) : null;
 
     /// <summary>Un chrono rapide ouvert interdit l'envoi : sa fin n'est pas encore connue.</summary>
     public bool QuickRunning => _quickDate is not null;
@@ -231,6 +272,9 @@ internal sealed class GitTracker : IAsyncDisposable
         try
         {
             await ObserveAsync(ct).ConfigureAwait(false);
+            _observedAt = _clock();
+            _lastError = null;
+            _lastErrorAt = null;
         }
         catch (OperationCanceledException)
         {
@@ -238,7 +282,10 @@ internal sealed class GitTracker : IAsyncDisposable
         }
         catch (Exception error) when (error is DomainException or IOException or UnauthorizedAccessException or JsonException)
         {
-            // Un relevé raté ne doit pas arrêter la surveillance : le suivant réessaie.
+            // Un relevé raté ne doit pas arrêter la surveillance : le suivant réessaie. La
+            // trace reste lisible dans la consultation de la journée en cours.
+            _lastError = error.Message;
+            _lastErrorAt = _clock();
         }
         finally
         {
@@ -290,6 +337,9 @@ internal sealed class GitTracker : IAsyncDisposable
             Publish("no-repo");
             return;
         }
+
+        // Seule une lecture aboutie horodate le dépôt : au-delà, il ne répond plus.
+        _branchAt = now;
 
         var date = TimeRules.DateKey(now);
         var sameBlock = string.Equals(_branch, branch, StringComparison.Ordinal)
@@ -408,13 +458,18 @@ internal sealed class GitTracker : IAsyncDisposable
             "git",
             _blockEntryId);
 
-        if (written is not null) _blockEntryId = written.Id;
+        if (written is null) return;
+
+        _blockEntryId = written.Id;
+        _blockEnd = end;
+        _writtenAt = _clock();
     }
 
     private void CloseBlock()
     {
         _blockWindow = null;
         _blockEntryId = null;
+        _blockEnd = null;
     }
 
     /// <summary>

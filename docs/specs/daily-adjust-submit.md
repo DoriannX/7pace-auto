@@ -64,6 +64,26 @@ portant le même numéro restent deux worklogs distincts.
 - Une journée peut être explicitement ignorée après confirmation forte. Aucun appel 7pace
   n’est alors effectué.
 
+### Consultation de la journée en cours
+
+La collecte est silencieuse : sans retour, une panne de relevé ne se découvre que le
+lendemain, quand la journée arrive vide ou fausse. Le terminal expose donc une consultation
+de la journée calendaire en cours, en lecture seule et disponible même lorsqu’une journée
+terminée attend déjà d’être traitée.
+
+Elle montre les créneaux réellement enregistrés aujourd’hui — heures, ticket résolu,
+libellé de relecture, origine — les intervalles encore à attribuer, et l’état du suivi :
+branche lue, créneau en cours, dernier relevé, dernière lecture de branche, dernière
+écriture et dernière erreur. Passé trois intervalles de relevé sans nouveau relevé, le
+suivi est annoncé figé. Une lecture Git impossible s’y distingue d’un dépôt absent : le
+relevé reste frais alors que la dernière lecture de branche vieillit. Seuls les trous déjà
+écoulés sont signalés : les horaires à venir n’en sont pas.
+
+Cette consultation ne corrige, ne supprime, n’ignore ni n’envoie quoi que ce soit, ne lit
+aucune donnée 7pace et n’écrit rien sur le disque pour se rafraîchir. Elle ne remplace pas
+la file du matin, qui garde la priorité, et rappelle simplement combien de journées y
+attendent.
+
 ### Ajustement
 
 Le terminal affiche la liste chronologique des créneaux. L’utilisateur peut :
@@ -102,7 +122,8 @@ Le terminal est l’unique interface prise en charge. Son écran métier contien
 - les avertissements de trous et de chevauchements ;
 - les actions Ajouter/corriger, Supprimer, Envoyer et Ignorer la journée ;
 - l’action rapide Démarrer/arrêter « À attribuer » pour la journée en cours ;
-- un état compact du suivi Git.
+- un état compact du suivi Git ;
+- l’accès à la consultation en lecture seule de la journée en cours.
 
 Les seuls écrans secondaires sont Réglages, Jeton 7pace et Mise à jour. Les réglages
 conservent le dépôt, la fréquence de relevé, l’organisation Azure DevOps, le compte 7pace, les
@@ -144,3 +165,8 @@ vers la version terminal. Elle ne reçoit plus de nouvelle fonctionnalité.
 16. L’ancienne interface graphique affiche clairement qu’elle est dépréciée.
 17. Un relevé Git raté ne ferme pas le créneau en cours, n’ouvre pas de doublon à la reprise
     et ne produit jamais d’intervalle « poste en veille ou arrêté ».
+18. La journée en cours est consultable en lecture seule à tout moment, y compris quand une
+    journée terminée attend déjà, et cette consultation ne la rend ni modifiable ni
+    envoyable.
+19. La consultation distingue un suivi vivant d’un suivi figé, et n’écrit rien sur le disque
+    pour se rafraîchir.

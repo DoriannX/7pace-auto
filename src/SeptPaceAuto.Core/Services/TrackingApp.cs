@@ -29,19 +29,25 @@ internal sealed class TrackingApp : ITrackingApp
     private readonly SevenPaceClient _sevenPace;
     private readonly IUpdateService _updates;
 
+    /// <summary>Horloge du domaine. Injectable pour vérifier le passage de minuit.</summary>
+    private readonly Func<DateTime> _now;
+
     /// <summary>Réglages actifs. Remplacés d'un bloc par un enregistrement, jamais modifiés en place.</summary>
     private volatile Profile _profile;
 
     private CancellationTokenSource? _life;
 
-    public TrackingApp()
+    public TrackingApp() : this(static () => DateTime.Now) { }
+
+    internal TrackingApp(Func<DateTime> now)
     {
+        _now = now;
         AppPaths.EnsureRoot();
         _profile = Profile.FromDisk();
 
         _days = new DayStore(() => _profile);
         _resolver = new WorkItemResolver(() => _profile.Settings.AzureOrganization);
-        _tracker = new GitTracker(_days, _resolver, () => _profile);
+        _tracker = new GitTracker(_days, _resolver, () => _profile, now);
         _sevenPace = new SevenPaceClient(_sevenPaceHttp, () => _profile.SevenPaceEndpoint);
         _updates = UpdateServiceFactory.Create(AppVersion.Current);
     }
@@ -64,6 +70,9 @@ internal sealed class TrackingApp : ITrackingApp
 
             case "pendingDay":
                 return await PendingDayAsync(ct).ConfigureAwait(false);
+
+            case "currentDay":
+                return CurrentDay();
 
             case "saveEntry":
             {
@@ -153,7 +162,7 @@ internal sealed class TrackingApp : ITrackingApp
         }
     }
 
-    private static string Today() => TimeRules.DateKey(DateTime.Now);
+    private string Today() => TimeRules.DateKey(_now());
 
     private string Bootstrap()
     {
@@ -247,6 +256,33 @@ internal sealed class TrackingApp : ITrackingApp
         return failed == 0
             ? $"Azure : {done}."
             : $"Azure : {done}, {failed} Bug{(failed > 1 ? "s" : string.Empty)} sans Fix exploitable.";
+    }
+
+    /// <summary>
+    /// Consultation de la journée calendaire en cours. Diagnostic en lecture seule : rien
+    /// n'est écrit, ni sur le disque ni ailleurs, et ni Azure ni 7pace ne sont appelés. La
+    /// journée en cours reste non modifiable et non envoyable ; la file du matin garde la
+    /// priorité, et cette vue rappelle seulement combien de journées y attendent.
+    /// </summary>
+    private string CurrentDay()
+    {
+        var date = Today();
+        var review = Review(date, _days.Day(date));
+        return Write(new
+        {
+            review.date,
+            review.entries,
+            review.holes,
+            review.overlaps,
+            review.totalMinutes,
+            review.plannedMinutes,
+            review.unassigned,
+            readOnly = true,
+            notice = "Journée en cours : consultation seule, elle se corrige et s’envoie demain matin.",
+            tracking = _tracker.Current,
+            health = _tracker.Health,
+            pending = _days.Pending(date).Count,
+        });
     }
 
     /// <summary>

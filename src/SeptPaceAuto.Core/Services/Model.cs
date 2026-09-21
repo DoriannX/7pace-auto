@@ -65,6 +65,35 @@ public sealed record Tracking(
     [property: JsonPropertyName("quickRunning")] bool QuickRunning,
     [property: JsonPropertyName("state")] string State);
 
+/// <summary>
+/// Fraîcheur du suivi : de quoi distinguer une collecte vivante d'une collecte figée sans
+/// rien déclencher. Les horodatages partent bruts, au format aller-retour ; c'est
+/// l'interface qui décide de ce qu'elle en dit.
+/// </summary>
+public sealed record TrackingHealth(
+    /// <summary>Dernier relevé mené à son terme, réussi ou non concluant.</summary>
+    [property: JsonPropertyName("observedAt")] string? ObservedAt,
+
+    /// <summary>Dernière lecture de branche réussie : au-delà, le dépôt ne répond plus.</summary>
+    [property: JsonPropertyName("branchAt")] string? BranchAt,
+
+    /// <summary>Dernière écriture ou prolongation d'un créneau de collecte.</summary>
+    [property: JsonPropertyName("writtenAt")] string? WrittenAt,
+
+    [property: JsonPropertyName("spanDate")] string? SpanDate,
+    [property: JsonPropertyName("spanStart")] int? SpanStart,
+    [property: JsonPropertyName("spanEnd")] int? SpanEnd,
+
+    /// <summary>Dernier relevé en échec, déjà rédigé pour l'utilisateur.</summary>
+    [property: JsonPropertyName("error")] string? Error,
+    [property: JsonPropertyName("errorAt")] string? ErrorAt,
+
+    /// <summary>Faux quand git est absent du poste : aucun relevé n'est alors possible.</summary>
+    [property: JsonPropertyName("gitAvailable")] bool GitAvailable,
+
+    /// <summary>Au-delà de ce délai sans relevé, la collecte doit être annoncée figée.</summary>
+    [property: JsonPropertyName("staleAfterSeconds")] int StaleAfterSeconds);
+
 /// <summary>État d'une intégration, affiché tel quel.</summary>
 public sealed record ConnectionState(
     [property: JsonPropertyName("status")] string Status,

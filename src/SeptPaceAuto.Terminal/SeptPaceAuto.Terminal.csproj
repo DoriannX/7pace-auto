@@ -15,4 +15,9 @@
     <ProjectReference Include="..\SeptPaceAuto.Core\SeptPaceAuto.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- L'interface reste interne ; seuls ses tests la voient. -->
+    <InternalsVisibleTo Include="SeptPaceAuto.Tests" />
+  </ItemGroup>
+
 </Project>
