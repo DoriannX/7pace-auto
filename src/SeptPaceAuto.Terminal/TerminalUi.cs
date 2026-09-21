@@ -597,6 +597,7 @@ internal sealed class TerminalUi
     {
         "running" => "en cours",
         "outside-hours" => "hors horaires",
+        "git-unreadable" => "lecture Git en échec",
         "no-repo" => "dépôt introuvable",
         _ => state,
     };

@@ -27,3 +27,7 @@ Période des horaires de travail configurés que ne couvre aucun créneau. Un tr
 ## Chevauchement
 
 Période couverte par plusieurs créneaux. Un chevauchement est signalé mais reste envoyable, car il peut représenter plusieurs imputations simultanées volontaires.
+
+## Lecture Git impossible
+
+Relevé de branche qui n’aboutit pas : git dépasse son délai, ne se lance pas, ou le dossier du dépôt est momentanément indisponible. Ce n’est ni un dépôt absent, qui demande un réglage, ni une veille du poste : la branche connue reste valable quelques relevés, puis la collecte se fige sur la dernière minute réellement vérifiée.

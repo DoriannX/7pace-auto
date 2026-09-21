@@ -48,6 +48,8 @@ portant le même numéro restent deux worklogs distincts.
 - Elle surveille un seul dépôt Git et uniquement les horaires de travail configurés.
 - La branche active continue d’être comptée lorsque le poste reste allumé mais inactif.
 - Une interruption de collecte devient un créneau « À attribuer » plutôt qu’une supposition.
+- Un relevé Git raté n’est pas une interruption : la branche connue est conservée le temps de
+  quelques relevés, puis la collecte s’arrête sur la dernière minute réellement vérifiée.
 - Le créneau rapide « À attribuer » se démarre et s’arrête sans demander de numéro.
 - Un créneau rapide actif bloque l’envoi jusqu’à son arrêt et son attribution.
 
@@ -140,3 +142,5 @@ vers la version terminal. Elle ne reçoit plus de nouvelle fonctionnalité.
 14. Ignorer une journée la clôt localement sans contacter 7pace.
 15. Le terminal conserve uniquement les accès Réglages, Jeton 7pace et Mise à jour.
 16. L’ancienne interface graphique affiche clairement qu’elle est dépréciée.
+17. Un relevé Git raté ne ferme pas le créneau en cours, n’ouvre pas de doublon à la reprise
+    et ne produit jamais d’intervalle « poste en veille ou arrêté ».

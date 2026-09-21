@@ -35,10 +35,22 @@ internal sealed class WorkItemCacheRow
 }
 
 /// <summary>
+/// Rattachement d'une branche à son élément de travail, vu par le suivi. Isolé pour que la
+/// collecte s'éprouve sans Azure DevOps.
+/// </summary>
+public interface IWorkItemResolver
+{
+    /// <summary>Réponse déjà acquise, sans lancer az. Faux quand seule une interrogation pourrait répondre.</summary>
+    bool TryCached(string? branch, out Resolution resolution);
+
+    Task<Resolution> ResolveAsync(string? branch, CancellationToken ct);
+}
+
+/// <summary>
 /// Extrait le numéro de Bug/PBI de la branche puis cherche le Fix enfant via az boards.
 /// az absent, lent ou en échec : le créneau reste « à attribuer », jamais une supposition.
 /// </summary>
-public sealed class WorkItemResolver
+public sealed class WorkItemResolver : IWorkItemResolver
 {
     private static readonly Regex Number = new(@"(?<!\d)(\d{4,6})(?!\d)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 

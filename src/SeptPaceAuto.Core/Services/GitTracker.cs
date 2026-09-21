@@ -1,26 +1,12 @@
 #nullable enable
 using System;
-using System.Globalization;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace SeptPaceAuto.Services;
-
-internal sealed class Heartbeat
-{
-    [JsonPropertyName("at")] public string? At { get; set; }
-}
-
-/// <summary>Chrono rapide ouvert, relu au démarrage pour ne pas perdre la période en cours.</summary>
-internal sealed class QuickTimerState
-{
-    [JsonPropertyName("date")] public string? Date { get; set; }
-    [JsonPropertyName("startMinute")] public int StartMinute { get; set; }
-    [JsonPropertyName("entryId")] public int? EntryId { get; set; }
-}
 
 /// <summary>
 /// Surveillance discrète : la branche Git active, relevée dans les horaires de travail,
@@ -31,16 +17,24 @@ internal sealed class QuickTimerState
 /// </summary>
 internal sealed class GitTracker : IAsyncDisposable
 {
-    private static readonly TimeSpan GapThreshold = TimeSpan.FromMinutes(5);
-    private static readonly TimeSpan GitTimeout = TimeSpan.FromSeconds(10);
+    /// <summary>Écart minimal avant de conclure à une veille, même sur un relevé très rapproché.</summary>
+    private static readonly TimeSpan MinimumGap = TimeSpan.FromMinutes(5);
+
+    /// <summary>Durées entre lesquelles reste la tolérance à une lecture Git en échec.</summary>
+    private static readonly TimeSpan MinimumHold = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan MaximumHold = TimeSpan.FromMinutes(10);
+
     private const int MaxGapDays = 8;
     private const string QuickLabel = "Chrono rapide · à attribuer";
+    private const string GapLabel = "Intervalle à préciser (poste en veille ou arrêté)";
 
     private readonly DayStore _days;
-    private readonly WorkItemResolver _resolver;
+    private readonly IWorkItemResolver _resolver;
     private readonly Func<Profile> _profile;
+    private readonly IBranchReader _branches;
+    private readonly Func<DateTime> _clock;
+    private readonly ITrackerState _state;
     private readonly SemaphoreSlim _turn = new(1, 1);
-    private readonly string? _git = ProcessRunner.Git;
 
     private CancellationTokenSource? _life;
     private Task? _loop;
@@ -55,6 +49,9 @@ internal sealed class GitTracker : IAsyncDisposable
     private Resolution _resolution = new(null, null, null, false, null);
     private int _resolving;
 
+    /// <summary>Début de la série de lectures Git ratées en cours, <c>default</c> quand la lecture va bien.</summary>
+    private DateTime _unreadableSince;
+
     // Chrono rapide en cours.
     private string? _quickDate;
     private int _quickStart;
@@ -64,11 +61,28 @@ internal sealed class GitTracker : IAsyncDisposable
     private Tracking _current = new(null, null, null, "Suivi en préparation", false, "outside-hours");
 
     /// <param name="profile">Réglages actifs, relus à chaque relevé : un changement s'applique sans redémarrage.</param>
-    public GitTracker(DayStore days, WorkItemResolver resolver, Func<Profile> profile)
+    public GitTracker(DayStore days, IWorkItemResolver resolver, Func<Profile> profile)
+        : this(days, resolver, profile, new GitBranchReader(), static () => DateTime.Now, new FileTrackerState())
+    {
+    }
+
+    /// <param name="branches">Relevé de la branche ; isolé pour éprouver les pannes de lecture.</param>
+    /// <param name="clock">Horloge du suivi ; isolée pour éprouver la cadence sans attendre.</param>
+    /// <param name="state">Battement et chrono rapide persistés.</param>
+    internal GitTracker(
+        DayStore days,
+        IWorkItemResolver resolver,
+        Func<Profile> profile,
+        IBranchReader branches,
+        Func<DateTime> clock,
+        ITrackerState state)
     {
         _days = days;
         _resolver = resolver;
         _profile = profile;
+        _branches = branches;
+        _clock = clock;
+        _state = state;
     }
 
     /// <summary>Dernier état connu du suivi.</summary>
@@ -80,11 +94,20 @@ internal sealed class GitTracker : IAsyncDisposable
     public async Task StartAsync(CancellationToken ct)
     {
         _life = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        _lastTick = LoadHeartbeat();
-        LoadQuick();
-        await TickAsync(_life.Token).ConfigureAwait(false);
+        await PrimeAsync(_life.Token).ConfigureAwait(false);
         _loop = Task.Run(() => LoopAsync(_life.Token), CancellationToken.None);
     }
+
+    /// <summary>Relit l'état persisté puis effectue un premier relevé, sans lancer la boucle.</summary>
+    internal async Task PrimeAsync(CancellationToken ct)
+    {
+        _lastTick = _state.ReadHeartbeat();
+        LoadQuick();
+        await TickAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Un relevé isolé, pour éprouver la politique sans dépendre d'une horloge réelle.</summary>
+    internal Task ObserveOnceAsync(CancellationToken ct) => TickAsync(ct);
 
     /// <summary>
     /// Démarre ou arrête le chrono rapide. Le créneau produit est « à attribuer » : aucun
@@ -95,7 +118,7 @@ internal sealed class GitTracker : IAsyncDisposable
         await _turn.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var now = DateTime.Now;
+            var now = _clock();
             if (running)
             {
                 if (_quickDate is null)
@@ -132,10 +155,11 @@ internal sealed class GitTracker : IAsyncDisposable
         await _turn.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var now = DateTime.Now;
+            var now = _clock();
             WriteBlock(TimeRules.MinuteOfDay(now));
             CloseBlock();
             _branch = null;
+            _unreadableSince = default;
             _resolution = new Resolution(null, null, null, false, null);
         }
         finally
@@ -149,6 +173,29 @@ internal sealed class GitTracker : IAsyncDisposable
     }
 
     private TimeSpan Period() => TimeSpan.FromSeconds(Math.Clamp(_profile().Settings.PollSeconds, 10, 300));
+
+    /// <summary>
+    /// Écart au-delà duquel le poste est tenu pour endormi ou arrêté. Le seuil suit la
+    /// cadence réglée : à 300 s de relevé, un relevé normal arrive cinq minutes et quelques
+    /// secondes après le précédent, et un seuil fixe de cinq minutes transformait alors
+    /// chaque relevé d'une journée de travail en fausse absence.
+    /// </summary>
+    private TimeSpan GapAfter()
+    {
+        var threshold = Period() + Period() + TimeSpan.FromMinutes(1);
+        return threshold < MinimumGap ? MinimumGap : threshold;
+    }
+
+    /// <summary>
+    /// Durée pendant laquelle une lecture Git en échec conserve le bloc en cours. Elle reste
+    /// inférieure au seuil de veille : une panne de lecture n'est jamais lue comme une absence.
+    /// </summary>
+    private TimeSpan HoldFor()
+    {
+        var hold = Period() + Period();
+        if (hold < MinimumHold) hold = MinimumHold;
+        return hold > MaximumHold ? MaximumHold : hold;
+    }
 
     private async Task LoopAsync(CancellationToken ct)
     {
@@ -201,7 +248,7 @@ internal sealed class GitTracker : IAsyncDisposable
 
     private async Task ObserveAsync(CancellationToken ct)
     {
-        var now = DateTime.Now;
+        var now = _clock();
         var previous = _lastTick;
         _lastTick = now;
         SaveHeartbeat(now);
@@ -212,7 +259,7 @@ internal sealed class GitTracker : IAsyncDisposable
 
         // Veille, arrêt ou plantage : le bloc est coupé et l'intervalle manquant devient
         // un créneau « à attribuer », jamais une supposition.
-        if (previous != default && now - previous > GapThreshold)
+        if (previous != default && now - previous > GapAfter())
         {
             CloseBlock();
             FillGap(previous, now);
@@ -228,11 +275,15 @@ internal sealed class GitTracker : IAsyncDisposable
             return;
         }
 
-        var repository = _profile().Settings.RepoPath;
-        var branch = repository.Length > 0 && Directory.Exists(repository)
-            ? await ReadBranchAsync(repository, ct).ConfigureAwait(false)
-            : null;
-        if (branch is null)
+        var read = await _branches.ReadAsync(_profile().Settings.RepoPath, ct).ConfigureAwait(false);
+        if (read.Status == BranchStatus.Unreadable)
+        {
+            HoldOrFreeze(now, read);
+            return;
+        }
+
+        _unreadableSince = default;
+        if (read.Status != BranchStatus.Ok || read.Name is not string branch)
         {
             if (_blockWindow is { } orphan) WriteBlock(Math.Min(minute, orphan.End));
             CloseBlock();
@@ -255,12 +306,17 @@ internal sealed class GitTracker : IAsyncDisposable
                 WriteBlock(closeAt);
             }
             CloseBlock();
+            // Une attribution déjà obtenue pour cette branche est conservée : rouvrir un bloc
+            // après une coupure ne doit pas refaire un créneau « à attribuer » sans raison.
+            if (!string.Equals(_branch, branch, StringComparison.Ordinal))
+            {
+                _resolution = new Resolution(WorkItemResolver.ExtractBug(branch), null, null, false, null);
+            }
             _branch = branch;
             _blockDate = date;
             _blockWindow = window;
             _blockStart = Math.Max(window.Value.Start, minute);
             _blockEntryId = null;
-            _resolution = new Resolution(WorkItemResolver.ExtractBug(branch), null, null, false, null);
         }
 
         // Le relevé ne doit jamais attendre az : le cache répond tout de suite, et une
@@ -273,6 +329,25 @@ internal sealed class GitTracker : IAsyncDisposable
 
         WriteBlock(minute);
         Publish("running");
+    }
+
+    /// <summary>
+    /// Lecture Git ratée. Tant que la panne est brève, le dernier état sûr est conservé : le
+    /// bloc reste ouvert sans être prolongé, donc aucune minute n'est inventée, et la reprise
+    /// sur la même branche prolonge le même créneau au lieu d'en ouvrir un second. Passé le
+    /// délai de grâce, le bloc est gelé sur sa dernière minute vérifiée : la période inconnue
+    /// devient un trou signalé, jamais un « poste en veille » qui serait faux.
+    /// </summary>
+    private void HoldOrFreeze(DateTime now, BranchRead read)
+    {
+        if (_unreadableSince == default) _unreadableSince = now;
+
+        var held = _blockWindow is not null && now - _unreadableSince <= HoldFor();
+        if (!held) CloseBlock();
+
+        Publish("git-unreadable", held
+            ? $"Lecture du dépôt Git impossible ({read.Detail}) : branche {_branch} conservée"
+            : $"Lecture du dépôt Git impossible ({read.Detail}) : collecte suspendue");
     }
 
     /// <summary>
@@ -296,7 +371,7 @@ internal sealed class GitTracker : IAsyncDisposable
                     // La branche a pu changer entre-temps : on n'applique qu'au bloc concerné.
                     if (!string.Equals(_branch, branch, StringComparison.Ordinal)) return;
                     _resolution = resolution;
-                    var now = DateTime.Now;
+                    var now = _clock();
                     WriteBlock(TimeRules.MinuteOfDay(now));
                     Publish(_current.State);
                 }
@@ -370,54 +445,61 @@ internal sealed class GitTracker : IAsyncDisposable
 
     private void FillGap(DateTime from, DateTime to)
     {
+        var windows = _profile().Schedule.Windows;
         var cursor = from.Date;
         for (var guard = 0; cursor <= to.Date && guard < MaxGapDays; guard++, cursor = cursor.AddDays(1))
         {
             // Un week-end sans poste allumé n'est pas un trou à justifier.
             if (cursor.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday) continue;
 
+            var date = TimeRules.DateKey(cursor);
+
+            // Une journée close appartient à 7pace : plus rien n'y est ajouté.
+            if (_days.IsClosed(date)) continue;
+
             var lower = cursor == from.Date ? TimeRules.MinuteOfDay(from) : 0;
             var upper = cursor == to.Date ? TimeRules.MinuteOfDay(to) : 24 * 60;
-            foreach (var window in _profile().Schedule.Windows)
+            var known = _days.Day(date);
+            foreach (var window in windows)
             {
                 var start = Math.Max(lower, window.Start);
                 var end = Math.Min(upper, window.End);
-                if (end - start < 1) continue;
-                _days.WriteSpan(
-                    TimeRules.DateKey(cursor),
-                    start,
-                    end,
-                    "Intervalle à préciser (poste en veille ou arrêté)",
-                    null,
-                    null,
-                    "gap",
-                    null);
+
+                // Ce qui est déjà couvert — créneau manuel, envoyé, chrono rapide ou relevé
+                // Git — n'est jamais redoublé : une reprise ne doit fabriquer ni doublon ni
+                // chevauchement.
+                foreach (var free in Uncovered(known, start, end))
+                {
+                    _days.WriteSpan(date, free.Start, free.End, GapLabel, null, null, "gap", null);
+                }
             }
         }
     }
 
-    private async Task<string?> ReadBranchAsync(string repository, CancellationToken ct)
+    /// <summary>Sous-périodes de [<paramref name="start"/>, <paramref name="end"/>) que ne couvre aucun créneau connu.</summary>
+    private static List<(int Start, int End)> Uncovered(IReadOnlyList<Entry> known, int start, int end)
     {
-        if (_git is null) return null;
+        var free = new List<(int Start, int End)>();
+        if (end - start < 1) return free;
 
-        var head = await ProcessRunner.RunAsync(
-            _git,
-            new[] { "-C", repository, "rev-parse", "--abbrev-ref", "HEAD" },
-            GitTimeout,
-            ct).ConfigureAwait(false);
-        var name = head.Ok ? head.StdOut.Trim() : null;
-        if (!string.IsNullOrEmpty(name) && !string.Equals(name, "HEAD", StringComparison.Ordinal)) return name;
+        var covered = new List<(int Start, int End)>();
+        foreach (var entry in known)
+        {
+            var from = Math.Max(entry.StartMinutes, start);
+            var to = Math.Min(entry.EndMinutes, end);
+            if (to > from) covered.Add((from, to));
+        }
+        covered.Sort(static (left, right) => left.Start.CompareTo(right.Start));
 
-        var symbolic = await ProcessRunner.RunAsync(
-            _git,
-            new[] { "-C", repository, "symbolic-ref", "--quiet", "--short", "HEAD" },
-            GitTimeout,
-            ct).ConfigureAwait(false);
-        var alternate = symbolic.Ok ? symbolic.StdOut.Trim() : null;
-        if (!string.IsNullOrEmpty(alternate)) return alternate;
-
-        // HEAD détachée : le temps est bien réel, mais l'attribution reste à faire.
-        return string.IsNullOrEmpty(name) ? null : "HEAD détachée";
+        var cursor = start;
+        foreach (var span in covered)
+        {
+            if (span.Start > cursor) free.Add((cursor, span.Start));
+            if (span.End > cursor) cursor = span.End;
+            if (cursor >= end) break;
+        }
+        if (cursor < end) free.Add((cursor, end));
+        return free;
     }
 
     private string EntryLabel()
@@ -430,9 +512,10 @@ internal sealed class GitTracker : IAsyncDisposable
         return $"Branche {_branch} · attribution à compléter";
     }
 
-    private void Publish(string state)
+    /// <param name="detail">Libellé imposé, quand l'état ne suffit pas à le décrire.</param>
+    private void Publish(string state, string? detail = null)
     {
-        var label = state switch
+        var label = detail ?? state switch
         {
             "running" => EntryLabel(),
             "outside-hours" => "Hors horaires de travail",
@@ -452,30 +535,11 @@ internal sealed class GitTracker : IAsyncDisposable
         _current = next;
     }
 
-    private static DateTime LoadHeartbeat()
-    {
-        var stored = AppPaths.ReadJson<Heartbeat>(AppPaths.Heartbeat);
-        return DateTime.TryParse(stored?.At, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var moment)
-            ? moment.ToLocalTime()
-            : default;
-    }
-
-    private static void SaveHeartbeat(DateTime now)
-    {
-        try
-        {
-            AppPaths.EnsureRoot();
-            AppPaths.WriteAtomic(AppPaths.Heartbeat, JsonSerializer.Serialize(new Heartbeat { At = now.ToString("o", CultureInfo.InvariantCulture) }, Json.Pretty));
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-        {
-            // Sans battement, un redémarrage ne détectera pas le trou : ce n'est pas bloquant.
-        }
-    }
+    private void SaveHeartbeat(DateTime now) => _state.WriteHeartbeat(now);
 
     private void LoadQuick()
     {
-        var stored = AppPaths.ReadJson<QuickTimerState>(AppPaths.Quick);
+        var stored = _state.ReadQuick();
         if (stored?.Date is null) return;
         try
         {
@@ -492,21 +556,9 @@ internal sealed class GitTracker : IAsyncDisposable
 
     private void SaveQuick()
     {
-        try
-        {
-            AppPaths.EnsureRoot();
-            if (_quickDate is null)
-            {
-                if (File.Exists(AppPaths.Quick)) File.Delete(AppPaths.Quick);
-                return;
-            }
-            var payload = new QuickTimerState { Date = _quickDate, StartMinute = _quickStart, EntryId = _quickEntryId };
-            AppPaths.WriteAtomic(AppPaths.Quick, JsonSerializer.Serialize(payload, Json.Pretty));
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-        {
-            // Le créneau est déjà écrit sur le disque : perdre l'état du chrono ne perd pas le temps.
-        }
+        _state.WriteQuick(_quickDate is null
+            ? null
+            : new QuickTimerState { Date = _quickDate, StartMinute = _quickStart, EntryId = _quickEntryId });
     }
 
     public async ValueTask DisposeAsync()
@@ -527,7 +579,7 @@ internal sealed class GitTracker : IAsyncDisposable
         // Dernière écriture : la fermeture ne perd pas la minute en cours.
         try
         {
-            var now = DateTime.Now;
+            var now = _clock();
             WriteBlock(TimeRules.MinuteOfDay(now));
             WriteQuick(now);
             SaveHeartbeat(now);

@@ -9,4 +9,9 @@
     <AssemblyName>SeptPaceAuto.Core</AssemblyName>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- Le cœur métier reste interne ; seuls ses tests le voient. -->
+    <InternalsVisibleTo Include="SeptPaceAuto.Tests" />
+  </ItemGroup>
+
 </Project>
