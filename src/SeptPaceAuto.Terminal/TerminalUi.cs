@@ -21,6 +21,10 @@ internal sealed record DayView(
 /// <summary>
 /// Unique interface : la journée terminée la plus ancienne, corrigée puis envoyée. Aucune
 /// sélection de date, aucun historique, aucune relecture de 7pace.
+///
+/// Elle ne collecte rien elle-même. Tout passe par le collecteur de fond, dont l'état de
+/// liaison est affiché en permanence : fermer cette fenêtre ne coupe jamais le suivi, et
+/// seule une action explicite et confirmée l'arrête.
 /// </summary>
 internal sealed class TerminalUi
 {
@@ -30,7 +34,7 @@ internal sealed class TerminalUi
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    private readonly ITrackingApp _app;
+    private readonly ITrackingChannel _app;
     private readonly CancellationToken _ct;
 
     private DayView? _day;
@@ -38,7 +42,7 @@ internal sealed class TerminalUi
     private string _trackingLabel = string.Empty;
     private string _trackingState = string.Empty;
 
-    public TerminalUi(ITrackingApp app, CancellationToken ct)
+    public TerminalUi(ITrackingChannel app, CancellationToken ct)
     {
         _app = app;
         _ct = ct;
@@ -46,11 +50,7 @@ internal sealed class TerminalUi
 
     public async Task<int> RunAsync()
     {
-        Console.WriteLine("7pace auto — terminal");
-        Console.WriteLine($"Données : {TrackingAppFactory.DataFolder}");
-
-        await ReadTrackingAsync();
-        await LoadDayAsync();
+        await RefreshAsync();
 
         while (!_ct.IsCancellationRequested)
         {
@@ -94,6 +94,12 @@ internal sealed class TerminalUi
                     case "9":
                         if (await UpdateAsync()) return 0;
                         break;
+                    case "10":
+                        await StopTrackingAsync();
+                        break;
+                    case "11":
+                        await ReconnectAsync();
+                        break;
                     default:
                         Console.WriteLine("Choix inconnu.");
                         break;
@@ -105,7 +111,7 @@ internal sealed class TerminalUi
             }
             catch (JsonException)
             {
-                Console.WriteLine("Erreur : le cœur a renvoyé une réponse illisible.");
+                Console.WriteLine("Erreur : le collecteur a renvoyé une réponse illisible.");
             }
         }
 
@@ -124,7 +130,30 @@ internal sealed class TerminalUi
         Console.WriteLine("7. Configurer l’application");
         Console.WriteLine("8. Enregistrer ou supprimer le jeton 7pace");
         Console.WriteLine("9. Rechercher et installer une mise à jour");
-        Console.WriteLine("0. Quitter");
+        Console.WriteLine("10. Arrêter complètement le suivi en arrière-plan");
+        Console.WriteLine("11. Relancer ou rejoindre le collecteur en arrière-plan");
+        Console.WriteLine("0. Fermer le terminal (le suivi continue en arrière-plan)");
+    }
+
+    /// <summary>
+    /// Relit l'état auprès du collecteur. Une liaison perdue ne fait pas tomber l'interface :
+    /// elle est annoncée, et le menu reste utilisable pour la rétablir.
+    /// </summary>
+    private async Task RefreshAsync()
+    {
+        try
+        {
+            await ReadTrackingAsync();
+            await LoadDayAsync();
+        }
+        catch (DomainException error)
+        {
+            Console.WriteLine(error.Message);
+        }
+        catch (JsonException)
+        {
+            Console.WriteLine("Le collecteur a renvoyé une réponse illisible.");
+        }
     }
 
     /// <summary>Charge la journée à traiter. Azure y est relancé : c'est le moment utile.</summary>
@@ -203,9 +232,74 @@ internal sealed class TerminalUi
 
     private void PrintTracking()
     {
+        Console.WriteLine(Connection());
+        if (!_app.Connected)
+        {
+            Console.WriteLine("Rien n’est collecté tant que le collecteur ne tourne pas : choix 11 pour le relancer.");
+            return;
+        }
         Console.WriteLine($"Suivi d’aujourd’hui : {TrackingLabel(_trackingState)} · {_trackingLabel}");
         Console.WriteLine($"Chrono rapide : {(_quickRunning ? "en cours" : "arrêté")}");
         Console.WriteLine("Détail de la journée en cours : choix 6 (lecture seule).");
+    }
+
+    /// <summary>État de la liaison, toujours visible : l'utilisateur doit savoir qui collecte.</summary>
+    private string Connection()
+    {
+        if (!_app.Connected)
+        {
+            return _app.Trouble is { Length: > 0 } reason
+                ? $"Collecteur : injoignable — {reason}"
+                : "Collecteur : injoignable.";
+        }
+
+        var agent = _app.Agent;
+        var since = agent?.Started is DateTimeOffset started
+            ? $" · depuis {started.ToString("HH:mm", CultureInfo.InvariantCulture)}"
+            : string.Empty;
+        return $"Collecteur : connecté · version {agent?.Version} · PID {agent?.Pid}{since}";
+    }
+
+    /// <summary>
+    /// Arrêt complet du suivi de fond, distinct de la fermeture du terminal. Le collecteur
+    /// ferme ses créneaux et son battement avant de sortir : aucune minute déjà relevée
+    /// n'est perdue, et plus aucune n'est collectée ensuite.
+    /// </summary>
+    private async Task StopTrackingAsync()
+    {
+        if (!_app.Connected)
+        {
+            Console.WriteLine("Aucun collecteur ne tourne : il n’y a rien à arrêter.");
+            return;
+        }
+
+        Console.WriteLine("Cette action arrête la collecte en arrière-plan, pas seulement cette fenêtre.");
+        Console.WriteLine("Plus aucune minute ne sera relevée tant que le collecteur n’aura pas été relancé");
+        Console.WriteLine("— au prochain démarrage de Windows, ou par le choix 11.");
+        if (!Confirm("Tape ARRETER pour confirmer", "ARRETER"))
+        {
+            Console.WriteLine("Arrêt annulé : le suivi continue.");
+            return;
+        }
+
+        Console.WriteLine(await _app.StopAgentAsync(_ct));
+        _trackingState = string.Empty;
+        _trackingLabel = string.Empty;
+        _quickRunning = false;
+    }
+
+    /// <summary>Rejoint le collecteur en place, ou en démarre un quand il n'y en a plus.</summary>
+    private async Task ReconnectAsync()
+    {
+        Console.WriteLine("Recherche du collecteur en arrière-plan…");
+        if (!await _app.ConnectAsync(launchIfMissing: true, _ct))
+        {
+            Console.WriteLine(_app.Trouble ?? "Le collecteur reste injoignable.");
+            return;
+        }
+
+        Console.WriteLine("Collecteur rejoint : la collecte tourne.");
+        await RefreshAsync();
     }
 
     /// <summary>
@@ -487,7 +581,13 @@ internal sealed class TerminalUi
         }
 
         Console.WriteLine("Téléchargement de la nouvelle version…");
-        using var applied = await CallAsync("applyUpdate", new { });
+        // Le collecteur porte la mise à jour : il doit attendre la sortie de ce terminal
+        // avant de remplacer les fichiers, sinon les binaires restent verrouillés.
+        using var applied = await CallAsync("applyUpdate", new
+        {
+            clientPid = Environment.ProcessId,
+            reopenTerminal = true,
+        });
         var result = applied.RootElement;
         Console.WriteLine(Text(result, "message"));
         return result.TryGetProperty("ok", out var ok) && ok.GetBoolean();
@@ -577,7 +677,9 @@ internal sealed class TerminalUi
         Console.Write(fallback is null || fallback.Length == 0 ? $"{label} : " : $"{label} [{fallback}] : ");
         var raw = Console.ReadLine();
         if (raw is null) return null;
-        var value = raw.Trim();
+        // Une entrée redirigée peut commencer par une marque d'ordre d'octets : elle ne fait
+        // pas partie de la réponse, et sans cela « 0 » cesse d'être « 0 ».
+        var value = raw.Trim().Trim('\uFEFF').Trim();
         return value.Length == 0 ? fallback ?? string.Empty : value;
     }
 

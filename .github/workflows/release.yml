@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   release:
-    name: Construire et publier le terminal
+    name: Construire et publier le collecteur et son terminal
     runs-on: windows-latest
 
     steps:
@@ -24,7 +24,17 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Publier le terminal
+      - name: Vérifier la compilation
+        shell: pwsh
+        run: |
+          # Le dépôt n'a pas de fichier solution : chaque projet d'entrée est compilé
+          # explicitement, sinon MSBuild ne trouve rien à la racine.
+          foreach ($projet in @('src/SeptPaceAuto.Agent', 'src/SeptPaceAuto.Terminal', 'tests/SeptPaceAuto.Tests')) {
+            dotnet build $projet -c Release -warnaserror --nologo
+            if ($LASTEXITCODE -ne 0) { throw "La compilation de $projet a échoué." }
+          }
+
+      - name: Publier le collecteur et son terminal
         shell: pwsh
         run: ./build/publish.ps1 -Version "${{ github.ref_name }}"
 
@@ -33,6 +43,19 @@ jobs:
         run: |
           $attendu = 'artifacts/SeptPaceAuto.Terminal-win-x64.zip'
           if (-not (Test-Path -LiteralPath $attendu)) { throw "Artefact absent : $attendu" }
+
+          # La mise à jour automatique refuse une archive amputée : autant le voir ici.
+          Add-Type -AssemblyName 'System.IO.Compression.FileSystem'
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $attendu))
+          try {
+            foreach ($nom in @('SeptPaceAuto.Agent.exe', 'SeptPaceAuto.Terminal.exe')) {
+              if (-not ($archive.Entries | Where-Object { $_.FullName -eq $nom })) {
+                throw "L'archive ne contient pas $nom a sa racine."
+              }
+            }
+          } finally {
+            $archive.Dispose()
+          }
           Get-Item -LiteralPath $attendu | Select-Object Name, Length
 
       - name: Créer la publication GitHub

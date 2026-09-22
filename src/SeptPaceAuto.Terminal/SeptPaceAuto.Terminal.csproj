@@ -13,11 +13,20 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SeptPaceAuto.Core\SeptPaceAuto.Core.csproj" />
+    <!--
+      Le terminal n'utilise aucun type du collecteur : la référence ne sert qu'à le
+      construire avant lui, pour qu'un « dotnet run » trouve l'exécutable à côté du sien.
+    -->
+    <ProjectReference Include="..\SeptPaceAuto.Agent\SeptPaceAuto.Agent.csproj"
+                      ReferenceOutputAssembly="false"
+                      Private="false" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- L'interface reste interne ; seuls ses tests la voient. -->
     <InternalsVisibleTo Include="SeptPaceAuto.Tests" />
   </ItemGroup>
+
+  <Import Project="..\..\build\AgentOutput.targets" />
 
 </Project>

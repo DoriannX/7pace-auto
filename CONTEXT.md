@@ -1,5 +1,25 @@
 # Glossaire
 
+## Collecteur
+
+Processus de fond, sans fenêtre, qui relève la branche Git, tient les journées, écrit sur le disque et envoie la notification du matin. Il démarre avec la session Windows et continue quel que soit le sort du terminal. Un seul collecteur existe par profil de données, et lui seul écrit.
+
+## Terminal
+
+Interface en ligne de commande. Elle ne collecte rien : elle interroge le collecteur, affiche ce qu’il sait et lui transmet les corrections. La fermer ne ferme que l’interface.
+
+## Liaison
+
+Canal local entre un terminal et le collecteur de son profil de données, réservé au compte Windows qui l’a ouvert. Son état est visible en permanence dans le menu : un collecteur injoignable est annoncé comme tel, jamais présenté comme un suivi qui tourne.
+
+## Arrêt complet du suivi
+
+Action explicite et confirmée qui demande au collecteur de fermer ses créneaux, d’écrire son dernier relevé puis de sortir. Elle se distingue de la fermeture du terminal, qui ne touche pas à la collecte.
+
+## Profil de données
+
+Dossier qui porte les réglages, le jeton et les journées, ordinairement `%LOCALAPPDATA%\7pace-auto`. Il détermine à lui seul le collecteur, sa liaison et son verrou : deux profils distincts ne se voient jamais.
+
 ## Journée en cours
 
 La date calendaire actuelle. L’application y collecte automatiquement les créneaux, mais elle ne peut pas l’envoyer.

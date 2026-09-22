@@ -5,11 +5,12 @@
 
 .DESCRIPTION
     Copie l'application dans %LOCALAPPDATA%\Programs\7pace auto, crée le raccourci
-    du menu Démarrer, éventuellement le raccourci de démarrage automatique, et
-    inscrit une entrée de désinstallation dans la ruche de l'utilisateur (HKCU).
-    Le script est idempotent : le relancer met à jour l'installation en place après
-    avoir fermé l'application si elle tourne. Les données de journée
-    (%LOCALAPPDATA%\7pace-auto) ne sont jamais touchées.
+    du menu Démarrer vers le terminal, éventuellement le raccourci de session vers le
+    collecteur de fond, et inscrit une entrée de désinstallation dans la ruche de
+    l'utilisateur (HKCU). Le script est idempotent : le relancer met à jour
+    l'installation en place après avoir arrêté proprement le collecteur. Les données de
+    journée (%LOCALAPPDATA%\7pace-auto) ne sont jamais touchées, et un démarrage
+    automatique déjà choisi est conservé.
 
 .EXAMPLE
     .\build\install.ps1
@@ -17,7 +18,7 @@
 
 .EXAMPLE
     .\build\install.ps1 -Zip .\artifacts\SeptPaceAuto.Terminal-win-x64.zip -Startup
-    Installe depuis une archive et lance l'application à l'ouverture de session.
+    Installe depuis une archive et lance le collecteur à l'ouverture de session.
 #>
 [CmdletBinding()]
 param(
@@ -27,16 +28,35 @@ param(
     # Dossier déjà publié à installer (prioritaire sur la détection automatique).
     [string] $Source,
 
-    # Ajoute un raccourci dans le dossier Démarrage de l'utilisateur.
+    # Lance le collecteur de fond à chaque ouverture de session.
     [switch] $Startup
 )
 
 $ErrorActionPreference = 'Stop'
 
 $NomApplication = '7pace auto'
-$NomProcessus = 'SeptPaceAuto.Terminal'
+$NomsProcessus = @('SeptPaceAuto.Agent', 'SeptPaceAuto.Terminal')
 $NomExecutable = 'SeptPaceAuto.Terminal.exe'
-$CleDesinstallation = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\7pace-auto'
+$NomCollecteur = 'SeptPaceAuto.Agent.exe'
+
+# Emplacements de l'installation. Les variables SEPTPACE_* ne servent qu'aux tests
+# d'installation : elles permettent de poser une installation complète dans un dossier
+# jetable, sans toucher à celle de l'utilisateur ni à ses raccourcis.
+function Emplacement([string] $Variable, [scriptblock] $Defaut) {
+    $valeur = [Environment]::GetEnvironmentVariable($Variable)
+    if ([string]::IsNullOrWhiteSpace($valeur)) { return & $Defaut }
+    if (-not (Test-Path -LiteralPath $valeur)) { New-Item -ItemType Directory -Path $valeur -Force | Out-Null }
+    return [System.IO.Path]::GetFullPath($valeur)
+}
+
+$RacineProgrammes = Emplacement 'SEPTPACE_INSTALL_ROOT' { Join-Path $env:LOCALAPPDATA 'Programs' }
+$DossierMenu = Emplacement 'SEPTPACE_MENU_DIR' { [Environment]::GetFolderPath('Programs') }
+$DossierDemarrage = Emplacement 'SEPTPACE_STARTUP_DIR' { [Environment]::GetFolderPath('Startup') }
+$CleDesinstallation = if ([string]::IsNullOrWhiteSpace($env:SEPTPACE_UNINSTALL_KEY)) {
+    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\7pace-auto'
+} else {
+    $env:SEPTPACE_UNINSTALL_KEY
+}
 
 function Write-Etape([string] $Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
 function Write-Info([string] $Message) { Write-Host "    $Message" }
@@ -48,12 +68,31 @@ function Resolve-Chemin([string] $Chemin) {
     return [System.IO.Path]::GetFullPath($Chemin)
 }
 
-# Ferme proprement l'application puis force la fermeture au bout de 5 secondes.
-function Stop-Application {
-    $processus = @(Get-Process -Name $NomProcessus -ErrorAction SilentlyContinue)
+# Arrête le collecteur par son propre protocole : il ferme ses créneaux et son battement
+# avant de sortir, donc aucune minute relevée n'est perdue par l'installation.
+function Stop-Collecteur([string] $Executable) {
+    if (-not (Test-Path -LiteralPath $Executable)) { return }
+    try {
+        $arret = Start-Process -FilePath $Executable -ArgumentList '--stop' -WindowStyle Hidden -PassThru -Wait -ErrorAction Stop
+        if ($arret.ExitCode -ne 0) { Write-Info 'Le collecteur n''a pas confirmé son arrêt.' }
+    } catch {
+        Write-Info "Arrêt du collecteur impossible : $($_.Exception.Message)"
+    }
+}
+
+# Ferme ce qui reste, puis force la fermeture au bout de 5 secondes. Seuls les processus
+# lancés depuis le dossier installé sont visés : un collecteur d'un autre profil, ou une
+# compilation locale, ne doit pas être arrêté par une installation.
+function Stop-Application([string] $Cible) {
+    Stop-Collecteur (Join-Path $Cible $NomCollecteur)
+
+    $racine = [System.IO.Path]::GetFullPath($Cible).TrimEnd('\')
+    $processus = @(Get-Process -Name $NomsProcessus -ErrorAction SilentlyContinue | Where-Object {
+        try { $_.Path -and $_.Path.StartsWith($racine, [StringComparison]::OrdinalIgnoreCase) } catch { $false }
+    })
     if ($processus.Count -eq 0) { return }
 
-    Write-Etape 'Fermeture de l''application en cours'
+    Write-Etape 'Fermeture des processus encore ouverts'
     foreach ($p in $processus) {
         try {
             [void] $p.CloseMainWindow()
@@ -131,12 +170,15 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $origine $NomExecutable))) {
         throw "$NomExecutable est absent de $origine."
     }
+    if (-not (Test-Path -LiteralPath (Join-Path $origine $NomCollecteur))) {
+        throw "$NomCollecteur est absent de $origine : republie avec .\build\publish.ps1."
+    }
 
     # --- Copie ---------------------------------------------------------------
-    $cible = Join-Path $env:LOCALAPPDATA (Join-Path 'Programs' $NomApplication)
+    $cible = Join-Path $RacineProgrammes $NomApplication
     $misAJour = Test-Path -LiteralPath (Join-Path $cible $NomExecutable)
 
-    Stop-Application
+    Stop-Application $cible
 
     if ($misAJour) { Write-Etape "Mise à jour de l'installation existante" }
     else { Write-Etape 'Installation' }
@@ -149,6 +191,7 @@ try {
 
     Copy-Item -Path (Join-Path $origine '*') -Destination $cible -Recurse -Force
     $executable = Join-Path $cible $NomExecutable
+    $collecteur = Join-Path $cible $NomCollecteur
     Write-Info $cible
 
     # Le script de désinstallation voyage avec l'application : l'entrée HKCU le cible.
@@ -166,17 +209,21 @@ try {
 
     # --- Raccourcis ----------------------------------------------------------
     Write-Etape 'Raccourcis'
-    $menu = Join-Path ([Environment]::GetFolderPath('Programs')) "$NomApplication.lnk"
+    $menu = Join-Path $DossierMenu "$NomApplication.lnk"
     New-Raccourci -Chemin $menu -Cible $executable -Description 'Suivi automatique du temps et imputation 7pace'
     Write-Info "Menu Démarrer : $menu"
 
-    $demarrage = Join-Path ([Environment]::GetFolderPath('Startup')) "$NomApplication.lnk"
+    # Le démarrage de session lance le collecteur, pas l'interface : le suivi doit tourner
+    # sans fenêtre, et le menu Démarrer suffit à ouvrir le terminal quand on en a besoin.
+    $demarrage = Join-Path $DossierDemarrage "$NomApplication.lnk"
+    $auDemarrage = $Startup -or (Test-Path -LiteralPath $demarrage)
     if ($Startup) {
-        New-Raccourci -Chemin $demarrage -Cible $executable -Description 'Collecte du temps, ajustement et envoi 7pace' -Fenetre 7
+        New-Raccourci -Chemin $demarrage -Cible $collecteur -Description 'Collecte du temps en arrière-plan' -Fenetre 7
         Write-Info "Démarrage automatique : $demarrage"
     } elseif (Test-Path -LiteralPath $demarrage) {
-        # Une installation précédente avait activé le démarrage : la cible est rafraîchie.
-        New-Raccourci -Chemin $demarrage -Cible $executable -Description 'Collecte du temps, ajustement et envoi 7pace' -Fenetre 7
+        # Une installation précédente avait activé le démarrage : le choix est conservé, et
+        # la cible passe de l'ancien terminal tout-en-un au collecteur de fond.
+        New-Raccourci -Chemin $demarrage -Cible $collecteur -Description 'Collecte du temps en arrière-plan' -Fenetre 7
         Write-Info "Démarrage automatique conservé : $demarrage"
     }
 
@@ -224,13 +271,30 @@ try {
     New-ItemProperty -Path $CleDesinstallation -Name 'EstimatedSize' -Value $poids -PropertyType DWord -Force | Out-Null
     Write-Info "Version inscrite : $version"
 
+    # --- Reprise du suivi ----------------------------------------------------
+    # L'installation vient d'arrêter le collecteur : sans cela, plus rien ne serait relevé
+    # jusqu'à la prochaine ouverture de session.
+    if ($auDemarrage) {
+        Write-Etape 'Démarrage du collecteur'
+        try {
+            Start-Process -FilePath $collecteur -WindowStyle Hidden | Out-Null
+            Write-Info 'Le suivi tourne en arrière-plan.'
+        } catch {
+            Write-Info "Démarrage du collecteur impossible : $($_.Exception.Message)"
+        }
+    }
+
     Write-Host ''
     Write-Host "$NomApplication est installé." -ForegroundColor Green
     Write-Info "Dossier      : $cible"
-    Write-Info "Exécutable   : $executable"
+    Write-Info "Terminal     : $executable"
+    Write-Info "Collecteur   : $collecteur"
     Write-Info "Menu Démarrer: $NomApplication"
     Write-Info "Désinstaller : .\build\uninstall.ps1 (ou depuis Applications installées)"
     Write-Info 'Les réglages et les journées restent dans %LOCALAPPDATA%\7pace-auto.'
+    if (-not $auDemarrage) {
+        Write-Info 'Sans -Startup, le collecteur démarre à la première ouverture du terminal.'
+    }
 } finally {
     if ($temporaire -and (Test-Path -LiteralPath $temporaire)) {
         Remove-Item -LiteralPath $temporaire -Recurse -Force -ErrorAction SilentlyContinue

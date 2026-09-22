@@ -1,12 +1,13 @@
 ﻿#requires -Version 5.1
 <#
 .SYNOPSIS
-    Publie le terminal 7pace auto pour Windows x64 et produit son archive de release.
+    Publie 7pace auto pour Windows x64 et produit son archive de release.
 
 .DESCRIPTION
-    Compile le terminal en autonome (self-contained) et range les fichiers publiés dans
-    artifacts\SeptPaceAuto.Terminal-win-x64.zip. L’exécutable et les scripts d’installation
-    sont à la racine, disposition vérifiée par la mise à jour automatique.
+    Compile le collecteur de fond et son terminal en autonomes (self-contained) dans le même
+    dossier, puis range le tout dans artifacts\SeptPaceAuto.Terminal-win-x64.zip. Les deux
+    exécutables et les scripts d’installation sont à la racine de l’archive, disposition
+    vérifiée par la mise à jour automatique.
 
 .EXAMPLE
     .\build\publish.ps1
@@ -38,10 +39,18 @@ function Resolve-Chemin([string] $Chemin) {
 }
 
 $racine = Split-Path -Parent $PSScriptRoot
-$projet = Join-Path $racine 'src\SeptPaceAuto.Terminal'
 
-if (-not (Test-Path -LiteralPath (Join-Path $projet 'SeptPaceAuto.Terminal.csproj'))) {
-    throw "Projet terminal introuvable : $projet. Lance ce script depuis le dépôt 7pace-auto."
+# Le collecteur d'abord, le terminal ensuite : ils partagent le dossier de publication.
+$projets = [ordered] @{
+    'SeptPaceAuto.Agent'    = Join-Path $racine 'src\SeptPaceAuto.Agent'
+    'SeptPaceAuto.Terminal' = Join-Path $racine 'src\SeptPaceAuto.Terminal'
+}
+
+foreach ($nom in $projets.Keys) {
+    $fichier = Join-Path $projets[$nom] "$nom.csproj"
+    if (-not (Test-Path -LiteralPath $fichier)) {
+        throw "Projet introuvable : $fichier. Lance ce script depuis le dépôt 7pace-auto."
+    }
 }
 
 if (-not (Get-Command 'dotnet' -ErrorAction SilentlyContinue)) {
@@ -70,29 +79,36 @@ if (Test-Path -LiteralPath $dossierPublication) {
 New-Item -ItemType Directory -Path $dossierPublication -Force | Out-Null
 Write-Info $Output
 
-Write-Etape 'Publication du terminal .NET (win-x64, autonome)'
-$arguments = @(
-    'publish', $projet,
-    '-c', 'Release',
-    '-r', 'win-x64',
-    '--self-contained', 'true',
-    '-p:PublishSingleFile=false',
-    '-o', $dossierPublication,
-    '--nologo'
-)
-if ($versionPropre) {
-    $arguments += ('-p:Version=' + $versionPropre)
-    Write-Info "Version demandée : $versionPropre"
+if ($versionPropre) { Write-Info "Version demandée : $versionPropre" }
+
+foreach ($nom in $projets.Keys) {
+    Write-Etape "Publication de $nom (win-x64, autonome)"
+    $arguments = @(
+        'publish', $projets[$nom],
+        '-c', 'Release',
+        '-r', 'win-x64',
+        '--self-contained', 'true',
+        '-p:PublishSingleFile=false',
+        # La copie de développement n'a pas lieu d'être ici : les deux projets visent déjà
+        # le même dossier de publication.
+        '-p:SeptPaceSansCopieCollecteur=true',
+        '-o', $dossierPublication,
+        '--nologo'
+    )
+    if ($versionPropre) { $arguments += ('-p:Version=' + $versionPropre) }
+
+    & dotnet @arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "La publication de $nom a échoué (code $LASTEXITCODE)."
+    }
 }
 
-& dotnet @arguments
-if ($LASTEXITCODE -ne 0) {
-    throw "La publication a échoué (code $LASTEXITCODE)."
-}
-
-$executable = Join-Path $dossierPublication 'SeptPaceAuto.Terminal.exe'
-if (-not (Test-Path -LiteralPath $executable)) {
-    throw "La publication n'a pas produit SeptPaceAuto.Terminal.exe dans $dossierPublication."
+# Le collecteur et le terminal voyagent ensemble : une archive amputée casserait la mise à jour.
+foreach ($nom in $projets.Keys) {
+    $executable = Join-Path $dossierPublication "$nom.exe"
+    if (-not (Test-Path -LiteralPath $executable)) {
+        throw "La publication n'a pas produit $nom.exe dans $dossierPublication."
+    }
 }
 
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'install.ps1') -Destination $dossierPublication -Force

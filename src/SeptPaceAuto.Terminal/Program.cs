@@ -1,36 +1,44 @@
 using System.Text;
-using System.Text.Json;
 using SeptPaceAuto.Services;
 using SeptPaceAuto.Terminal;
 
-Console.InputEncoding = Encoding.UTF8;
-Console.OutputEncoding = Encoding.UTF8;
+try
+{
+    // Sans console attachée — terminal piloté par un script ou par un test —, Windows refuse
+    // de changer la page de codes. Ce n'est pas une raison de ne pas démarrer.
+    Console.InputEncoding = Encoding.UTF8;
+    Console.OutputEncoding = Encoding.UTF8;
+}
+catch (Exception error) when (error is IOException or PlatformNotSupportedException or UnauthorizedAccessException)
+{
+}
 
 using var lifetime = new CancellationTokenSource();
 Console.CancelKeyPress += (_, eventArgs) =>
 {
+    // CTRL+C ferme l'interface, et elle seule : le collecteur continue de collecter.
     eventArgs.Cancel = true;
     lifetime.Cancel();
 };
 
-using var instance = new Mutex(
-    initiallyOwned: true,
-    TrackingAppFactory.InstanceMutexName,
-    out var owned);
-
-if (!owned)
-{
-    Console.Error.WriteLine("7pace auto utilise déjà ce profil de données. Ferme l’autre terminal avant de recommencer.");
-    return 1;
-}
-
 try
 {
     Directory.CreateDirectory(TrackingAppFactory.DataFolder);
-    await using var app = TrackingAppFactory.Create();
-    await app.StartAsync(lifetime.Token);
-    await AnnouncePendingAsync(app, lifetime.Token);
-    return await new TerminalUi(app, lifetime.Token).RunAsync();
+
+    Console.WriteLine("7pace auto — terminal");
+    Console.WriteLine($"Données : {TrackingAppFactory.DataFolder}");
+    Console.WriteLine("Recherche du collecteur en arrière-plan…");
+
+    // Plusieurs terminaux peuvent être ouverts : aucun n'écrit, tous passent par le
+    // collecteur, qui reste seul à tenir la plume.
+    await using var channel = new AgentClient();
+    if (!await channel.ConnectAsync(launchIfMissing: true, lifetime.Token))
+    {
+        Console.WriteLine(channel.Trouble ?? "Le collecteur de fond ne répond pas.");
+        Console.WriteLine("Rien n’est collecté tant qu’il ne tourne pas : relance-le depuis le menu.");
+    }
+
+    return await new TerminalUi(channel, lifetime.Token).RunAsync();
 }
 catch (OperationCanceledException)
 {
@@ -45,29 +53,4 @@ catch (Exception error)
 {
     Console.Error.WriteLine($"Démarrage impossible : {error.Message}");
     return 1;
-}
-
-// Notification unique du matin : l'application démarre minimisée avec la session, et c'est
-// le seul signal qui ramène vers le terminal.
-static async Task AnnouncePendingAsync(ITrackingApp app, CancellationToken ct)
-{
-    int pending;
-    try
-    {
-        using var document = JsonDocument.Parse(await app.HandleAsync("bootstrap", "{}", ct));
-        pending = document.RootElement.TryGetProperty("pending", out var value) && value.TryGetInt32(out var count)
-            ? count
-            : 0;
-    }
-    catch (Exception error) when (error is DomainException or JsonException)
-    {
-        return;
-    }
-    if (pending == 0) return;
-
-    Notifier.Show(
-        "7pace auto",
-        pending == 1
-            ? "Une journée terminée attend d’être vérifiée puis envoyée."
-            : $"{pending} journées terminées attendent d’être vérifiées puis envoyées.");
 }

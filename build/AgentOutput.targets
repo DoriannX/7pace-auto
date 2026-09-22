@@ -1,0 +1,23 @@
+<Project>
+
+  <!--
+    Le collecteur doit se trouver à côté de l'exécutable qui cherche à le lancer : le
+    terminal en développement, et les tests qui démarrent un vrai processus. La publication
+    n'en a pas besoin — build/publish.ps1 range les deux projets dans le même dossier.
+  -->
+  <Target Name="CopierLeCollecteur" AfterTargets="Build" Condition="'$(SeptPaceSansCopieCollecteur)' != 'true'">
+    <ItemGroup>
+      <CollecteurPublie Include="$(MSBuildThisFileDirectory)..\src\SeptPaceAuto.Agent\bin\$(Configuration)\$(TargetFramework)\SeptPaceAuto.Agent.exe" />
+      <CollecteurPublie Include="$(MSBuildThisFileDirectory)..\src\SeptPaceAuto.Agent\bin\$(Configuration)\$(TargetFramework)\SeptPaceAuto.Agent.dll" />
+      <CollecteurPublie Include="$(MSBuildThisFileDirectory)..\src\SeptPaceAuto.Agent\bin\$(Configuration)\$(TargetFramework)\SeptPaceAuto.Agent.deps.json" />
+      <CollecteurPublie Include="$(MSBuildThisFileDirectory)..\src\SeptPaceAuto.Agent\bin\$(Configuration)\$(TargetFramework)\SeptPaceAuto.Agent.runtimeconfig.json" />
+      <CollecteurPublie Include="$(MSBuildThisFileDirectory)..\src\SeptPaceAuto.Agent\bin\$(Configuration)\$(TargetFramework)\SeptPaceAuto.Agent.pdb" />
+    </ItemGroup>
+
+    <Copy SourceFiles="@(CollecteurPublie)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(CollecteurPublie)' != ''" />
+  </Target>
+
+</Project>

@@ -46,8 +46,13 @@ public interface IUpdateService
     /// <summary>Télécharge l'archive et retourne le dossier préparé.</summary>
     Task<string> StageAsync(UpdateInfo info, CancellationToken ct);
 
-    /// <summary>Lance le script d'installation ; l'appelant doit quitter juste après.</summary>
-    void LaunchUpdater(string stagedFolder);
+    /// <summary>
+    /// Lance le script d'installation ; l'appelant doit quitter juste après. Le script
+    /// attend la fin du collecteur et du terminal demandeur avant de toucher aux fichiers.
+    /// </summary>
+    /// <param name="clientPid">Terminal à attendre en plus du collecteur, nul quand il n'y en a pas.</param>
+    /// <param name="reopenTerminal">Rouvre le terminal après l'installation.</param>
+    void LaunchUpdater(string stagedFolder, int? clientPid, bool reopenTerminal);
 }
 
 /// <summary>Point d'entrée unique du service de mise à jour.</summary>
@@ -65,8 +70,11 @@ internal sealed class GitHubUpdateService : IUpdateService
     /// <summary>Nom figé de l'archive publiée, partagé avec build/publish.ps1.</summary>
     public const string AssetName = "SeptPaceAuto.Terminal-win-x64.zip";
 
-    /// <summary>Le nom de l'exécutable doit se trouver à la racine de l'archive.</summary>
-    private const string ExecutableName = "SeptPaceAuto.Terminal.exe";
+    /// <summary>
+    /// L'archive doit porter les deux exécutables à sa racine : le collecteur de fond et son
+    /// terminal. Une archive d'avant la séparation est refusée plutôt qu'installée à moitié.
+    /// </summary>
+    private static readonly string[] Executables = { AgentEndpoint.AgentExecutable, AgentEndpoint.TerminalExecutable };
 
     /// <summary>
     /// Une vérification ne bloque jamais l'interface : le pont abandonne à 20 s, donc la
@@ -101,6 +109,9 @@ internal sealed class GitHubUpdateService : IUpdateService
 
     private static string UpdateFolder => Path.Combine(AppPaths.Root, "update");
     private static string StagedFolder => Path.Combine(UpdateFolder, "staged");
+
+    /// <summary>Copie de l'installation avant remplacement : elle sert au retour arrière.</summary>
+    private static string BackupFolder => Path.Combine(UpdateFolder, "backup");
     private static string ScriptPath => Path.Combine(UpdateFolder, "apply.cmd");
     private static string LogPath => Path.Combine(UpdateFolder, "apply.log");
 
@@ -357,24 +368,27 @@ internal sealed class GitHubUpdateService : IUpdateService
             throw new DomainException("L’archive de mise à jour est vide.");
         }
 
-        var found = zip.Entries.Any(entry =>
-            string.Equals(entry.FullName, ExecutableName, StringComparison.OrdinalIgnoreCase));
-        if (!found)
+        foreach (var name in Executables)
         {
-            throw new DomainException("L’archive téléchargée ne contient pas " + ExecutableName + " à sa racine.");
+            var found = zip.Entries.Any(entry =>
+                string.Equals(entry.FullName, name, StringComparison.OrdinalIgnoreCase));
+            if (!found)
+            {
+                throw new DomainException("L’archive téléchargée ne contient pas " + name + " à sa racine.");
+            }
         }
     }
 
 
-    public void LaunchUpdater(string stagedFolder)
+    public void LaunchUpdater(string stagedFolder, int? clientPid, bool reopenTerminal)
     {
         if (string.IsNullOrWhiteSpace(stagedFolder) || !Directory.Exists(stagedFolder))
         {
             throw new DomainException("Le dossier de mise à jour préparé est introuvable.");
         }
 
-        var (executable, install) = Installation();
-        var script = Script(stagedFolder, install, executable);
+        var installation = Installation();
+        var script = Script(stagedFolder, installation, clientPid, reopenTerminal);
 
         Directory.CreateDirectory(UpdateFolder);
         File.WriteAllText(ScriptPath, script, new UTF8Encoding(false));
@@ -396,57 +410,83 @@ internal sealed class GitHubUpdateService : IUpdateService
     }
 
     /// <summary>
-    /// Script de remplacement : il attend la fin du processus courant, recopie le dossier
-    /// préparé sur l'installation, relance l'application puis se nettoie.
+    /// Script de remplacement. Il attend que le collecteur et le terminal demandeur soient
+    /// réellement sortis — sans quoi les binaires resteraient verrouillés —, garde une copie
+    /// de l'installation, recopie le dossier préparé, relance le collecteur puis se nettoie.
+    /// Une copie qui échoue est annulée : l'installation précédente est remise en place et
+    /// le suivi repart dessus, plutôt que de laisser un dossier à moitié remplacé.
     /// </summary>
-    private static string Script(string staged, string install, string executable)
+    internal static string Script(string staged, (string Agent, string Terminal, string Folder) installation, int? clientPid, bool reopenTerminal)
     {
-        var text = Preamble(executable);
+        var text = Preamble(installation, clientPid);
         text.Append("set \"STAGED=").Append(Trim(staged)).Append("\"\r\n");
-        text.Append("set \"INSTALL=").Append(Trim(install)).Append("\"\r\n");
+        text.Append("set \"INSTALL=").Append(Trim(installation.Folder)).Append("\"\r\n");
+        text.Append("set \"BACKUP=").Append(Trim(BackupFolder)).Append("\"\r\n");
         Wait(text);
+        text.Append("rmdir /s /q \"%BACKUP%\" >nul 2>&1\r\n");
+        text.Append("robocopy \"%INSTALL%\" \"%BACKUP%\" /MIR /R:2 /W:1 /NFL /NDL /NJH /NJS /NP >>\"%LOG%\" 2>&1\r\n");
         text.Append("robocopy \"%STAGED%\" \"%INSTALL%\" /MIR /R:3 /W:2 /NFL /NDL /NJH /NJS /NP >>\"%LOG%\" 2>&1\r\n");
         text.Append("if errorlevel 8 (\r\n");
         // La fenêtre est masquée : la trace utile va dans le journal, pas sur la console.
-        text.Append("  echo [7pace auto] copie de la mise a jour en echec, installation inchangee. >>\"%LOG%\"\r\n");
-        text.Append("  start \"\" \"%EXE%\"\r\n");
+        text.Append("  echo [7pace auto] copie en echec, retour a la version precedente. >>\"%LOG%\"\r\n");
+        text.Append("  robocopy \"%BACKUP%\" \"%INSTALL%\" /MIR /R:3 /W:2 /NFL /NDL /NJH /NJS /NP >>\"%LOG%\" 2>&1\r\n");
+        text.Append("  start \"\" \"%AGENT%\"\r\n");
         text.Append("  exit /b 1\r\n");
         text.Append(")\r\n");
-        Finish(text);
+        Finish(text, reopenTerminal);
         return text.ToString();
     }
 
 
     /// <summary>En-tête commun aux deux scripts : encodage, processus à attendre, journal.</summary>
-    private static StringBuilder Preamble(string executable)
+    private static StringBuilder Preamble((string Agent, string Terminal, string Folder) installation, int? clientPid)
     {
         var text = new StringBuilder();
         text.Append("@echo off\r\n");
         // Les chemins peuvent contenir des accents : le script est écrit en UTF-8.
         text.Append("chcp 65001 >nul 2>&1\r\n");
         text.Append("setlocal\r\n");
-        text.Append("set \"PID=").Append(Environment.ProcessId.ToString(CultureInfo.InvariantCulture)).Append("\"\r\n");
-        text.Append("set \"EXE=").Append(executable).Append("\"\r\n");
+        var pids = clientPid is int client && client != Environment.ProcessId
+            ? string.Concat(Environment.ProcessId.ToString(CultureInfo.InvariantCulture), " ", client.ToString(CultureInfo.InvariantCulture))
+            : Environment.ProcessId.ToString(CultureInfo.InvariantCulture);
+        text.Append("set \"PIDS=").Append(pids).Append("\"\r\n");
+        text.Append("set \"AGENT=").Append(installation.Agent).Append("\"\r\n");
+        text.Append("set \"TERMINAL=").Append(installation.Terminal).Append("\"\r\n");
         text.Append("set \"LOG=").Append(LogPath).Append("\"\r\n");
+        // Le dossier de travail peut avoir disparu entre la préparation et l'exécution :
+        // sans lui, les redirections vers le journal échoueraient et rien ne serait copié.
+        text.Append("if not exist \"").Append(Trim(UpdateFolder)).Append("\" mkdir \"").Append(Trim(UpdateFolder)).Append("\" >nul 2>&1\r\n");
         return text;
     }
 
-    /// <summary>Attente de la fermeture de l'application : rien n'est touché avant.</summary>
+    /// <summary>
+    /// Attente de la fermeture du collecteur et du terminal : rien n'est touché avant. Le
+    /// nom de l'image est vérifié en plus du numéro, pour qu'un PID recyclé par un autre
+    /// programme ne bloque pas l'installation indéfiniment.
+    /// </summary>
     private static void Wait(StringBuilder text)
     {
         text.Append(":wait\r\n");
-        text.Append("tasklist /FI \"PID eq %PID%\" /NH 2>nul | findstr /I /C:\"SeptPaceAuto\" >nul\r\n");
-        text.Append("if not errorlevel 1 (\r\n");
+        text.Append("set \"RESTE=\"\r\n");
+        text.Append("for %%P in (%PIDS%) do (\r\n");
+        text.Append("  tasklist /FI \"PID eq %%P\" /NH 2>nul | findstr /I /C:\"SeptPaceAuto\" >nul && set \"RESTE=1\"\r\n");
+        text.Append(")\r\n");
+        text.Append("if defined RESTE (\r\n");
         text.Append("  ping -n 2 127.0.0.1 >nul\r\n");
         text.Append("  goto wait\r\n");
         text.Append(")\r\n");
     }
 
-    /// <summary>Relance l'application, efface le dossier préparé puis le script lui-même.</summary>
-    private static void Finish(StringBuilder text)
+    /// <summary>
+    /// Relance le collecteur — le suivi est la promesse à tenir —, rouvre le terminal quand
+    /// c'est lui qui a demandé la mise à jour, puis efface ses dossiers et lui-même.
+    /// </summary>
+    private static void Finish(StringBuilder text, bool reopenTerminal)
     {
-        text.Append("start \"\" \"%EXE%\"\r\n");
+        text.Append("start \"\" \"%AGENT%\"\r\n");
+        if (reopenTerminal) text.Append("start \"\" \"%TERMINAL%\"\r\n");
         text.Append("rmdir /s /q \"%STAGED%\" >nul 2>&1\r\n");
+        text.Append("rmdir /s /q \"%BACKUP%\" >nul 2>&1\r\n");
         text.Append("del /f /q \"%~f0\" >nul 2>&1\r\n");
     }
 
@@ -454,30 +494,37 @@ internal sealed class GitHubUpdateService : IUpdateService
     /// <summary>Robocopy refuse un dossier terminé par une barre oblique inverse.</summary>
     private static string Trim(string folder) => folder.TrimEnd('\\', '/');
 
-    private static (string Executable, string Folder) Installation()
+    /// <summary>
+    /// Installation posée par build/install.ps1, seule cible autorisée. Les deux exécutables
+    /// doivent y être : remplacer un collecteur sans son terminal, ou l'inverse, laisserait
+    /// deux versions face à face.
+    /// </summary>
+    private static (string Agent, string Terminal, string Folder) Installation()
     {
-        var executable = Executable();
-        var folder = Path.GetDirectoryName(executable);
+        var folder = Home();
         var expected = Path.Combine(AppPaths.LocalAppData, "Programs", "7pace auto");
-        if (string.IsNullOrEmpty(folder)
-            || !string.Equals(Path.GetFileName(executable), ExecutableName, StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(Path.GetFullPath(folder).TrimEnd('\\', '/'),
-                Path.GetFullPath(expected).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+        var agent = Path.Combine(folder, AgentEndpoint.AgentExecutable);
+        var terminal = Path.Combine(folder, AgentEndpoint.TerminalExecutable);
+
+        if (!string.Equals(Path.GetFullPath(folder).TrimEnd('\\', '/'),
+                Path.GetFullPath(expected).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase)
+            || !File.Exists(agent)
+            || !File.Exists(terminal))
         {
             throw new DomainException(
                 "La mise à jour automatique est réservée à l’application installée. " +
                 "Lance build/install.ps1 avant de mettre à jour.");
         }
 
-        return (executable, folder);
+        return (agent, terminal, folder);
     }
 
-    private static string Executable()
+    /// <summary>Dossier du processus courant : le collecteur porte la mise à jour.</summary>
+    private static string Home()
     {
         var path = Environment.ProcessPath;
-        return !string.IsNullOrEmpty(path) && path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
-            ? path
-            : Path.Combine(AppContext.BaseDirectory.TrimEnd('\\'), ExecutableName);
+        var folder = string.IsNullOrEmpty(path) ? null : Path.GetDirectoryName(path);
+        return string.IsNullOrEmpty(folder) ? AppContext.BaseDirectory.TrimEnd('\\') : folder;
     }
 
     /// <summary>Comparaison numérique composant par composant, jamais textuelle.</summary>

@@ -18,19 +18,28 @@ public static class Notifier
 {
     private const int VisibleSeconds = 12;
 
-    public static void Show(string title, string message)
+    /// <param name="openOnClick">
+    /// Programme ouvert quand l'utilisateur clique la notification. Le collecteur y met le
+    /// terminal : la notification devient le chemin le plus court vers la journée en attente.
+    /// </param>
+    public static void Show(string title, string message, string? openOnClick = null)
     {
         var shell = PowerShell();
         if (shell is null) return;
 
+        // Le clic n'est reçu que si la boucle de messages tourne : d'où le pompage explicite
+        // pendant toute la durée d'affichage, puis la libération de l'icône.
         var script = string.Concat(
             "Add-Type -AssemblyName System.Windows.Forms; ",
             "Add-Type -AssemblyName System.Drawing; ",
+            "$cible = ", Quote(openOnClick ?? string.Empty), "; ",
             "$icone = New-Object System.Windows.Forms.NotifyIcon; ",
             "$icone.Icon = [System.Drawing.SystemIcons]::Information; ",
             "$icone.Visible = $true; ",
+            "if ($cible -and (Test-Path -LiteralPath $cible)) { $icone.add_BalloonTipClicked({ try { Start-Process -FilePath $cible } catch { } }) }; ",
             "$icone.ShowBalloonTip(", (VisibleSeconds * 1000).ToString(), ", ", Quote(title), ", ", Quote(message), ", 'Info'); ",
-            "Start-Sleep -Seconds ", VisibleSeconds.ToString(), "; ",
+            "$fin = (Get-Date).AddSeconds(", VisibleSeconds.ToString(), "); ",
+            "while ((Get-Date) -lt $fin) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100 }; ",
             "$icone.Dispose()");
 
         var start = new ProcessStartInfo(shell)
@@ -39,6 +48,7 @@ public static class Notifier
             CreateNoWindow = true,
         };
         start.ArgumentList.Add("-NoProfile");
+        start.ArgumentList.Add("-STA");
         start.ArgumentList.Add("-WindowStyle");
         start.ArgumentList.Add("Hidden");
         start.ArgumentList.Add("-Command");

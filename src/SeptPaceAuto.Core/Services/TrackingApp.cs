@@ -146,7 +146,7 @@ internal sealed class TrackingApp : ITrackingApp
                 return Write(Update(await CheckUpdateAsync(ct).ConfigureAwait(false)));
 
             case "applyUpdate":
-                return await ApplyUpdateAsync(ct).ConfigureAwait(false);
+                return await ApplyUpdateAsync(parameters, ct).ConfigureAwait(false);
 
             case "probeRepo":
                 return Write(await Probes.RepositoryAsync(Optional(parameters, "path"), ct).ConfigureAwait(false));
@@ -167,6 +167,7 @@ internal sealed class TrackingApp : ITrackingApp
     private string Bootstrap()
     {
         var profile = _profile;
+        var windows = profile.Schedule.Windows;
         return Write(new
         {
             today = Today(),
@@ -174,6 +175,8 @@ internal sealed class TrackingApp : ITrackingApp
             connections = Connections(),
             configured = profile.Configured,
             pending = _days.Pending(Today()).Count,
+            // Début des horaires : le collecteur s'en sert pour ne pas notifier en pleine nuit.
+            workStart = windows.Count > 0 ? windows[0].Start : 0,
         });
     }
 
@@ -413,10 +416,12 @@ internal sealed class TrackingApp : ITrackingApp
     };
 
     /// <summary>
-    /// Prépare la nouvelle version puis lance le programme de mise à jour. La coquille ferme
-    /// l'application dès que le résultat est positif : c'est lui qui remplace les fichiers.
+    /// Prépare la nouvelle version puis lance le programme de mise à jour. Celui-ci attend
+    /// la fermeture du collecteur et du terminal demandeur avant de toucher aux fichiers :
+    /// aucun binaire n'est verrouillé pendant le remplacement, et il relance ensuite le
+    /// collecteur. Le collecteur et le terminal se ferment dès que le résultat est positif.
     /// </summary>
-    private async Task<string> ApplyUpdateAsync(CancellationToken ct)
+    private async Task<string> ApplyUpdateAsync(JsonElement parameters, CancellationToken ct)
     {
         var info = await CheckUpdateAsync(ct).ConfigureAwait(false);
         if (info.Error is not null) return Write(new { ok = false, message = info.Error });
@@ -425,17 +430,27 @@ internal sealed class TrackingApp : ITrackingApp
             return Write(new { ok = false, message = $"Aucune mise à jour à installer : la version {info.Current} est déjà la plus récente." });
         }
 
+        var client = parameters.TryGetProperty("clientPid", out var pid)
+            && pid.ValueKind == JsonValueKind.Number && pid.TryGetInt32(out var number) && number > 0
+            ? number
+            : (int?)null;
+        var reopen = !parameters.TryGetProperty("reopenTerminal", out var flag) || flag.ValueKind != JsonValueKind.False;
+
         try
         {
             var staged = await _updates.StageAsync(info, ct).ConfigureAwait(false);
-            _updates.LaunchUpdater(staged);
+            _updates.LaunchUpdater(staged, client, reopen);
         }
         catch (DomainException error)
         {
             return Write(new { ok = false, message = error.Message });
         }
 
-        return Write(new { ok = true, message = $"Version {info.Latest} téléchargée : l’application se ferme pour l’installer, puis redémarre." });
+        return Write(new
+        {
+            ok = true,
+            message = $"Version {info.Latest} téléchargée : le suivi s’arrête le temps de l’installer, puis redémarre tout seul.",
+        });
     }
 
     private static JsonDocument ParseParams(string paramsJson)

@@ -9,8 +9,14 @@ l’utilisateur corrige ses créneaux et les envoie dans 7pace en moins de deux 
 L’application n’est pas une seconde interface 7pace : elle n’en lit aucune donnée, n’expose
 aucun historique et ne permet aucune correction après envoi.
 
+La collecte ne dépend d’aucune fenêtre ouverte. Un collecteur sans interface la porte du
+démarrage de la session jusqu’à son arrêt explicite ; le terminal n’est qu’une vue que l’on
+ouvre et referme sans conséquence.
+
 ## Frontière des responsabilités
 
+- Le collecteur est seul à relever, à écrire et à notifier. Le terminal ne fait qu’afficher
+  et demander.
 - Le dépôt Git configuré indique le travail courant.
 - Azure DevOps résout automatiquement le Bug ou PBI extrait de la branche vers son Fix ou sa
   Task. Cette lecture reste nécessaire pour éviter la ressaisie des tickets.
@@ -44,7 +50,12 @@ portant le même numéro restent deux worklogs distincts.
 
 ### Collecte
 
-- L’application démarre automatiquement avec Windows, minimisée.
+- Le collecteur démarre automatiquement avec la session Windows, sans fenêtre ni icône.
+- Fermer le terminal, par la croix comme par CTRL+C, ne l’arrête pas.
+- Ouvrir le terminal alors qu’aucun collecteur ne tourne en démarre un en silence.
+- Un seul collecteur écrit dans un profil de données donné ; un second lancement se retire.
+- Arrêter la collecte est une action de menu explicite et confirmée, qui fait fermer au
+  collecteur ses créneaux et son dernier relevé avant de sortir.
 - Elle surveille un seul dépôt Git et uniquement les horaires de travail configurés.
 - La branche active continue d’être comptée lorsque le poste reste allumé mais inactif.
 - Une interruption de collecte devient un créneau « À attribuer » plutôt qu’une supposition.
@@ -56,8 +67,9 @@ portant le même numéro restent deux worklogs distincts.
 ### File du matin
 
 - La journée calendaire en cours n’est jamais envoyable.
-- À la première activité du matin, une notification Windows unique signale les journées
-  terminées en attente.
+- Une notification Windows unique par journée calendaire signale les journées terminées en
+  attente. Elle part du collecteur, jamais avant le début des horaires de travail, et un
+  redémarrage du collecteur ne la rejoue pas. Cliquer la notification ouvre le terminal.
 - Le terminal présente la plus ancienne journée en attente.
 - Après traitement, il avance vers la suivante ; il ne fournit aucun sélecteur de date ni
   accès aux journées closes.
@@ -123,6 +135,7 @@ Le terminal est l’unique interface prise en charge. Son écran métier contien
 - les actions Ajouter/corriger, Supprimer, Envoyer et Ignorer la journée ;
 - l’action rapide Démarrer/arrêter « À attribuer » pour la journée en cours ;
 - un état compact du suivi Git ;
+- l’état de la liaison avec le collecteur, et son arrêt complet ou sa reprise ;
 - l’accès à la consultation en lecture seule de la journée en cours.
 
 Les seuls écrans secondaires sont Réglages, Jeton 7pace et Mise à jour. Les réglages
@@ -130,12 +143,18 @@ conservent le dépôt, la fréquence de relevé, l’organisation Azure DevOps, 
 horaires de travail et les options de mise à jour. Ils ne contiennent aucun catalogue
 d’activités : l’utilisateur saisit les numéros requis.
 
+Plusieurs terminaux peuvent être ouverts sur le même profil : aucun n’écrit, et le collecteur
+sérialise les demandes qui modifient une journée. Un collecteur injoignable est annoncé tel
+quel ; l’interface ne laisse jamais croire que le temps continue d’être compté.
+
 L’ancienne interface graphique affiche un bandeau visible « Version dépréciée » et oriente
 vers la version terminal. Elle ne reçoit plus de nouvelle fonctionnalité.
 
 ## Non-objectifs
 
 - Lire, synchroniser ou importer les worklogs 7pace.
+- Installer un service Windows ou demander des droits administrateur.
+- Exposer la liaison du collecteur hors du compte Windows qui l’héberge.
 - Afficher une vue jour choisie, semaine, mois ou historique.
 - Afficher des rapports, statistiques ou tendances.
 - Corriger ou supprimer depuis l’application une journée déjà envoyée.
@@ -170,3 +189,13 @@ vers la version terminal. Elle ne reçoit plus de nouvelle fonctionnalité.
     envoyable.
 19. La consultation distingue un suivi vivant d’un suivi figé, et n’écrit rien sur le disque
     pour se rafraîchir.
+20. Fermer le terminal, ou l’interrompre par CTRL+C, laisse la collecte se poursuivre.
+21. Ouvrir le terminal sans collecteur en démarre un, puis s’y connecte ; le rouvrir ensuite
+    retrouve l’état et les données déjà collectées.
+22. Un second collecteur lancé sur le même profil de données se retire sans rien écrire.
+23. Seule une action de menu explicite et confirmée arrête la collecte de fond, et le
+    collecteur écrit son dernier relevé avant de sortir.
+24. Une liaison perdue est annoncée, jamais masquée ; une écriture interrompue n’est pas
+    rejouée automatiquement.
+25. Une mise à jour attend la sortie du collecteur et du terminal, ne laisse jamais deux
+    versions actives, et préserve réglages, jeton et journées.

@@ -19,6 +19,23 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\SeptPaceAuto.Core\SeptPaceAuto.Core.csproj" />
     <ProjectReference Include="..\..\src\SeptPaceAuto.Terminal\SeptPaceAuto.Terminal.csproj" />
+    <!-- Le vrai collecteur est démarré comme processus par les tests d'intégration. -->
+    <ProjectReference Include="..\..\src\SeptPaceAuto.Agent\SeptPaceAuto.Agent.csproj"
+                      ReferenceOutputAssembly="false"
+                      Private="false" />
   </ItemGroup>
+
+  <Import Project="..\..\build\AgentOutput.targets" />
+
+  <!--
+    Les tests d'intégration ouvrent le vrai terminal : son exécutable doit se trouver à côté
+    d'eux, comme dans l'installation.
+  -->
+  <Target Name="CopierLeTerminal" AfterTargets="Build">
+    <ItemGroup>
+      <TerminalPublie Include="..\..\src\SeptPaceAuto.Terminal\bin\$(Configuration)\$(TargetFramework)\SeptPaceAuto.Terminal.exe" />
+    </ItemGroup>
+    <Copy SourceFiles="@(TerminalPublie)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" Condition="'@(TerminalPublie)' != ''" />
+  </Target>
 
 </Project>

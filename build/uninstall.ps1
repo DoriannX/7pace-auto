@@ -4,8 +4,9 @@
     Désinstalle 7pace auto pour l'utilisateur courant, sans droits administrateur.
 
 .DESCRIPTION
-    Ferme l'application, supprime %LOCALAPPDATA%\Programs\7pace auto, les raccourcis
-    du menu Démarrer et du dossier Démarrage, puis l'entrée de désinstallation HKCU.
+    Arrête proprement le collecteur de fond puis le terminal, supprime
+    %LOCALAPPDATA%\Programs\7pace auto, les raccourcis du menu Démarrer et du dossier
+    Démarrage, puis l'entrée de désinstallation HKCU.
     Aucune question n'est posée. Les données de journée et les réglages
     (%LOCALAPPDATA%\7pace-auto) sont conservés par défaut ; seul -PurgeData les efface.
 
@@ -29,8 +30,23 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $NomApplication = '7pace auto'
-$NomProcessus = 'SeptPaceAuto.Terminal'
-$CleDesinstallation = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\7pace-auto'
+$NomsProcessus = @('SeptPaceAuto.Agent', 'SeptPaceAuto.Terminal')
+
+# Mêmes points de montage que l'installation : SEPTPACE_* n'existe que pour les tests.
+function Emplacement([string] $Variable, [scriptblock] $Defaut) {
+    $valeur = [Environment]::GetEnvironmentVariable($Variable)
+    if ([string]::IsNullOrWhiteSpace($valeur)) { return & $Defaut }
+    return [System.IO.Path]::GetFullPath($valeur)
+}
+
+$RacineProgrammes = Emplacement 'SEPTPACE_INSTALL_ROOT' { Join-Path $env:LOCALAPPDATA 'Programs' }
+$DossierMenu = Emplacement 'SEPTPACE_MENU_DIR' { [Environment]::GetFolderPath('Programs') }
+$DossierDemarrage = Emplacement 'SEPTPACE_STARTUP_DIR' { [Environment]::GetFolderPath('Startup') }
+$CleDesinstallation = if ([string]::IsNullOrWhiteSpace($env:SEPTPACE_UNINSTALL_KEY)) {
+    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\7pace-auto'
+} else {
+    $env:SEPTPACE_UNINSTALL_KEY
+}
 
 function Write-Etape([string] $Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
 function Write-Info([string] $Message) { Write-Host "    $Message" }
@@ -39,10 +55,28 @@ if ($KeepData -and $PurgeData) {
     throw 'Choisis -KeepData ou -PurgeData, pas les deux.'
 }
 
-# Ferme proprement l'application puis force la fermeture au bout de 5 secondes.
-$processus = @(Get-Process -Name $NomProcessus -ErrorAction SilentlyContinue)
+$cible = Join-Path $RacineProgrammes $NomApplication
+
+# Le collecteur ferme d'abord ses créneaux et son battement : désinstaller ne doit pas
+# perdre la dernière minute relevée.
+$collecteur = Join-Path $cible 'SeptPaceAuto.Agent.exe'
+if (Test-Path -LiteralPath $collecteur) {
+    Write-Etape 'Arrêt du collecteur de fond'
+    try {
+        Start-Process -FilePath $collecteur -ArgumentList '--stop' -WindowStyle Hidden -Wait -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Info "Arrêt du collecteur impossible : $($_.Exception.Message)"
+    }
+}
+
+# Ferme ce qui reste puis force la fermeture au bout de 5 secondes. Seuls les processus
+# lancés depuis le dossier désinstallé sont visés.
+$racineInstallee = [System.IO.Path]::GetFullPath($cible).TrimEnd('\')
+$processus = @(Get-Process -Name $NomsProcessus -ErrorAction SilentlyContinue | Where-Object {
+    try { $_.Path -and $_.Path.StartsWith($racineInstallee, [StringComparison]::OrdinalIgnoreCase) } catch { $false }
+})
 if ($processus.Count -gt 0) {
-    Write-Etape 'Fermeture de l''application'
+    Write-Etape 'Fermeture des processus encore ouverts'
     foreach ($p in $processus) {
         try {
             [void] $p.CloseMainWindow()
@@ -61,7 +95,6 @@ if ($processus.Count -gt 0) {
 $retires = 0
 
 Write-Etape 'Suppression de l''application'
-$cible = Join-Path $env:LOCALAPPDATA (Join-Path 'Programs' $NomApplication)
 if (Test-Path -LiteralPath $cible) {
     # Le script vit peut-être dans le dossier qu'il supprime : on travaille depuis
     # ailleurs, puis on rend à l'appelant son dossier courant s'il existe encore.
@@ -83,8 +116,8 @@ if (Test-Path -LiteralPath $cible) {
 
 Write-Etape 'Suppression des raccourcis'
 $raccourcis = @(
-    (Join-Path ([Environment]::GetFolderPath('Programs')) "$NomApplication.lnk"),
-    (Join-Path ([Environment]::GetFolderPath('Startup')) "$NomApplication.lnk")
+    (Join-Path $DossierMenu "$NomApplication.lnk"),
+    (Join-Path $DossierDemarrage "$NomApplication.lnk")
 )
 foreach ($raccourci in $raccourcis) {
     if (Test-Path -LiteralPath $raccourci) {
