@@ -18,3 +18,9 @@ maquette/
 
 # Captures d'écran de travail laissées à la racine
 /*.png
+
+# App Tauri
+app/node_modules/
+app/dist/
+app/src-tauri/target/
+app/src-tauri/gen/

@@ -4,7 +4,7 @@
     Désinstalle 7pace auto pour l'utilisateur courant, sans droits administrateur.
 
 .DESCRIPTION
-    Arrête proprement le collecteur de fond puis le terminal, supprime
+    Arrête proprement le collecteur de fond puis l'app, supprime
     %LOCALAPPDATA%\Programs\7pace auto, les raccourcis du menu Démarrer et du dossier
     Démarrage, puis l'entrée de désinstallation HKCU.
     Aucune question n'est posée. Les données de journée et les réglages
@@ -30,7 +30,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $NomApplication = '7pace auto'
-$NomsProcessus = @('SeptPaceAuto.Agent', 'SeptPaceAuto.Terminal')
+$NomsProcessus = @('SeptPaceAuto.Agent', 'SeptPaceAuto.App', 'SeptPaceAuto.Terminal')
 
 # Mêmes points de montage que l'installation : SEPTPACE_* n'existe que pour les tests.
 function Emplacement([string] $Variable, [scriptblock] $Defaut) {
@@ -79,6 +79,12 @@ if ($processus.Count -gt 0) {
     Write-Etape 'Fermeture des processus encore ouverts'
     foreach ($p in $processus) {
         try {
+            # L'app ne tient aucune donnée et replie sa fenêtre au lieu de se fermer.
+            if ($p.ProcessName -eq 'SeptPaceAuto.App') {
+                $p.Kill()
+                [void] $p.WaitForExit(5000)
+                continue
+            }
             [void] $p.CloseMainWindow()
             if (-not $p.WaitForExit(5000)) {
                 Write-Info "Fermeture forcée (PID $($p.Id))."
@@ -106,7 +112,7 @@ if (Test-Path -LiteralPath $cible) {
         $retires++
     } catch {
         Write-Info "Suppression incomplète de $cible : $($_.Exception.Message)"
-        Write-Info 'Ferme les terminaux restants puis relance ce script.'
+        Write-Info 'Quitte l''app puis relance ce script.'
     } finally {
         if (Test-Path -LiteralPath $depart) { Set-Location -LiteralPath $depart }
     }

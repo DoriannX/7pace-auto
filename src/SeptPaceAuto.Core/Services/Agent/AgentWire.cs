@@ -89,7 +89,7 @@ internal static class AgentWire
                 : null;
             if (string.IsNullOrWhiteSpace(method))
             {
-                error = "Appel sans méthode : le terminal et le collecteur ne parlent pas la même langue.";
+                error = "Appel sans méthode : l’app et le collecteur ne parlent pas la même langue.";
                 return false;
             }
 
@@ -168,7 +168,7 @@ internal static class AgentWire
         if (version == AgentEndpoint.Protocol) return true;
 
         error = $"Protocole incompatible : le collecteur parle la version {AgentEndpoint.Protocol}, " +
-            $"la version {version} a été reçue. Ferme le terminal, relance l’installation puis réessaie.";
+            $"la version {version} a été reçue. Quitte l’app, relance l’installation puis réessaie.";
         return false;
     }
 

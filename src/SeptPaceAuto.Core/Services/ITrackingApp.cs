@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 namespace SeptPaceAuto.Services;
 
 /// <summary>
-/// Contrat JSON entre le terminal et le cœur métier. Le terminal interroge : rien ne lui
+/// Contrat JSON entre l'interface et le cœur métier. L'interface interroge : rien ne lui
 /// est poussé, il n'a pas d'affichage à rafraîchir en continu.
 /// </summary>
 public interface ITrackingApp : IAsyncDisposable
@@ -25,13 +25,13 @@ public interface ITrackingApp : IAsyncDisposable
 /// <summary>Point d'entrée unique du domaine.</summary>
 public static class TrackingAppFactory
 {
-    /// <summary>Profil de données du terminal.</summary>
+    /// <summary>Profil de données actif.</summary>
     public static string DataFolder => AppPaths.Root;
 
     /// <summary>Clé stable du profil, utilisée pour empêcher deux processus d'écrire simultanément.</summary>
     public static string DataKey { get; } = Key(DataFolder);
 
-    /// <summary>Mutex du terminal pour ce profil.</summary>
+    /// <summary>Mutex de l'ancien terminal tout-en-un pour ce profil.</summary>
     public static string InstanceMutexName => $@"Local\SeptPaceAuto.instance.{DataKey}";
 
     public static ITrackingApp Create() => new TrackingApp();

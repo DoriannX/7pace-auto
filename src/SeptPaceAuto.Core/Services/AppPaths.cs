@@ -34,9 +34,6 @@ internal static class AppPaths
     /// <summary>Chrono rapide en cours, pour qu'un redémarrage ne perde pas la période ouverte.</summary>
     public static string Quick => Path.Combine(Root, "quick.json");
 
-    /// <summary>Dernière journée pour laquelle la notification du matin est déjà partie.</summary>
-    public static string Announced => Path.Combine(Root, "notified.json");
-
     /// <summary>Jeton 7pace protégé par DPAPI, écrit depuis les réglages de l'application.</summary>
     public static string SevenPaceToken => Path.Combine(Root, "token.bin");
 

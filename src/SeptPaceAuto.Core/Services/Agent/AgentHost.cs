@@ -54,7 +54,7 @@ internal sealed class AgentHost : IAsyncDisposable
         _owner = Owner();
     }
 
-    /// <summary>Aboutit quand un terminal a demandé l'arrêt complet du suivi.</summary>
+    /// <summary>Aboutit quand un client a demandé l'arrêt complet du suivi.</summary>
     public Task<bool> StopRequested => _stop.Task;
 
     /// <summary>Ouvre le tuyau et dépose la présence du collecteur dans le profil.</summary>
@@ -170,7 +170,7 @@ internal sealed class AgentHost : IAsyncDisposable
 
                 if (stopping)
                 {
-                    // La réponse est partie : le terminal sait que l'arrêt est accepté.
+                    // La réponse est partie : le client sait que l'arrêt est accepté.
                     _stop.TrySetResult(true);
                     return;
                 }

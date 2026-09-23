@@ -5,38 +5,39 @@
 
 .DESCRIPTION
     Copie l'application dans %LOCALAPPDATA%\Programs\7pace auto, crée le raccourci
-    du menu Démarrer vers le terminal, éventuellement le raccourci de session vers le
-    collecteur de fond, et inscrit une entrée de désinstallation dans la ruche de
+    du menu Démarrer vers l'app, éventuellement le raccourci de session qui ouvre l'app
+    en widget, et inscrit une entrée de désinstallation dans la ruche de
     l'utilisateur (HKCU). Le script est idempotent : le relancer met à jour
     l'installation en place après avoir arrêté proprement le collecteur. Les données de
     journée (%LOCALAPPDATA%\7pace-auto) ne sont jamais touchées, et un démarrage
-    automatique déjà choisi est conservé.
+    automatique déjà choisi est conservé, y compris celui d'une version terminal.
 
 .EXAMPLE
     .\build\install.ps1
     Installe la dernière publication trouvée dans artifacts\.
 
 .EXAMPLE
-    .\build\install.ps1 -Zip .\artifacts\SeptPaceAuto.Terminal-win-x64.zip -Startup
-    Installe depuis une archive et lance le collecteur à l'ouverture de session.
+    .\build\install.ps1 -Zip .\artifacts\SeptPaceAuto-win-x64.zip -Startup
+    Installe depuis une archive et ouvre le widget à chaque ouverture de session.
 #>
 [CmdletBinding()]
 param(
-    # Archive SeptPaceAuto.Terminal-win-x64.zip à installer.
+    # Archive SeptPaceAuto-win-x64.zip à installer.
     [string] $Zip,
 
     # Dossier déjà publié à installer (prioritaire sur la détection automatique).
     [string] $Source,
 
-    # Lance le collecteur de fond à chaque ouverture de session.
+    # Ouvre l'app en widget à chaque ouverture de session ; elle lance le collecteur.
     [switch] $Startup
 )
 
 $ErrorActionPreference = 'Stop'
 
 $NomApplication = '7pace auto'
-$NomsProcessus = @('SeptPaceAuto.Agent', 'SeptPaceAuto.Terminal')
-$NomExecutable = 'SeptPaceAuto.Terminal.exe'
+# L'ancien terminal figure encore ici pour qu'une migration depuis la 1.x le ferme.
+$NomsProcessus = @('SeptPaceAuto.Agent', 'SeptPaceAuto.App', 'SeptPaceAuto.Terminal')
+$NomExecutable = 'SeptPaceAuto.App.exe'
 $NomCollecteur = 'SeptPaceAuto.Agent.exe'
 
 # Emplacements de l'installation. Les variables SEPTPACE_* ne servent qu'aux tests
@@ -95,6 +96,12 @@ function Stop-Application([string] $Cible) {
     Write-Etape 'Fermeture des processus encore ouverts'
     foreach ($p in $processus) {
         try {
+            # L'app ne tient aucune donnée et replie sa fenêtre au lieu de se fermer.
+            if ($p.ProcessName -eq 'SeptPaceAuto.App') {
+                $p.Kill()
+                [void] $p.WaitForExit(5000)
+                continue
+            }
             [void] $p.CloseMainWindow()
             if (-not $p.WaitForExit(5000)) {
                 Write-Info "Fermeture forcée (PID $($p.Id))."
@@ -109,7 +116,7 @@ function Stop-Application([string] $Cible) {
     Start-Sleep -Milliseconds 500
 }
 
-function New-Raccourci([string] $Chemin, [string] $Cible, [string] $Description, [int] $Fenetre = 1) {
+function New-Raccourci([string] $Chemin, [string] $Cible, [string] $Description, [string] $Arguments = '') {
     $dossier = Split-Path -Parent $Chemin
     if (-not (Test-Path -LiteralPath $dossier)) {
         New-Item -ItemType Directory -Path $dossier -Force | Out-Null
@@ -120,11 +127,10 @@ function New-Raccourci([string] $Chemin, [string] $Cible, [string] $Description,
     try {
         $raccourci = $shell.CreateShortcut($Chemin)
         $raccourci.TargetPath = $Cible
+        $raccourci.Arguments = $Arguments
         $raccourci.WorkingDirectory = Split-Path -Parent $Cible
         $raccourci.IconLocation = "$Cible,0"
         $raccourci.Description = $Description
-        # 7 = minimise : la collecte tourne sans fenetre au premier plan.
-        $raccourci.WindowStyle = $Fenetre
         $raccourci.Save()
     } finally {
         try { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) } catch { }
@@ -151,7 +157,7 @@ try {
         $origine = Resolve-Chemin $Source
     } else {
         $publication = Join-Path $racine 'artifacts\publish'
-        $archive = Join-Path $racine 'artifacts\SeptPaceAuto.Terminal-win-x64.zip'
+        $archive = Join-Path $racine 'artifacts\SeptPaceAuto-win-x64.zip'
 
         if (Test-Path -LiteralPath (Join-Path $PSScriptRoot $NomExecutable)) {
             $origine = $PSScriptRoot
@@ -213,18 +219,15 @@ try {
     New-Raccourci -Chemin $menu -Cible $executable -Description 'Suivi automatique du temps et imputation 7pace'
     Write-Info "Menu Démarrer : $menu"
 
-    # Le démarrage de session lance le collecteur, pas l'interface : le suivi doit tourner
-    # sans fenêtre, et le menu Démarrer suffit à ouvrir le terminal quand on en a besoin.
+    # Le démarrage de session ouvre l'app en widget ; elle rejoint ou lance le collecteur,
+    # et ouvre sa fenêtre d'elle-même quand une journée attend.
     $demarrage = Join-Path $DossierDemarrage "$NomApplication.lnk"
     $auDemarrage = $Startup -or (Test-Path -LiteralPath $demarrage)
-    if ($Startup) {
-        New-Raccourci -Chemin $demarrage -Cible $collecteur -Description 'Collecte du temps en arrière-plan' -Fenetre 7
+    if ($auDemarrage) {
+        # Un démarrage déjà choisi est conservé : son ancienne cible (terminal ou
+        # collecteur seul) passe à l'app en widget.
+        New-Raccourci -Chemin $demarrage -Cible $executable -Description 'Widget de suivi du temps' -Arguments '--widget'
         Write-Info "Démarrage automatique : $demarrage"
-    } elseif (Test-Path -LiteralPath $demarrage) {
-        # Une installation précédente avait activé le démarrage : le choix est conservé, et
-        # la cible passe de l'ancien terminal tout-en-un au collecteur de fond.
-        New-Raccourci -Chemin $demarrage -Cible $collecteur -Description 'Collecte du temps en arrière-plan' -Fenetre 7
-        Write-Info "Démarrage automatique conservé : $demarrage"
     }
 
     # --- Entrée de désinstallation (utilisateur courant) ---------------------
@@ -273,27 +276,27 @@ try {
 
     # --- Reprise du suivi ----------------------------------------------------
     # L'installation vient d'arrêter le collecteur : sans cela, plus rien ne serait relevé
-    # jusqu'à la prochaine ouverture de session.
+    # jusqu'à la prochaine ouverture de session. L'app en widget le relance.
     if ($auDemarrage) {
-        Write-Etape 'Démarrage du collecteur'
+        Write-Etape 'Démarrage du widget et du collecteur'
         try {
-            Start-Process -FilePath $collecteur -WindowStyle Hidden | Out-Null
+            Start-Process -FilePath $executable -ArgumentList '--widget' | Out-Null
             Write-Info 'Le suivi tourne en arrière-plan.'
         } catch {
-            Write-Info "Démarrage du collecteur impossible : $($_.Exception.Message)"
+            Write-Info "Démarrage de l'app impossible : $($_.Exception.Message)"
         }
     }
 
     Write-Host ''
     Write-Host "$NomApplication est installé." -ForegroundColor Green
     Write-Info "Dossier      : $cible"
-    Write-Info "Terminal     : $executable"
+    Write-Info "App          : $executable"
     Write-Info "Collecteur   : $collecteur"
     Write-Info "Menu Démarrer: $NomApplication"
     Write-Info "Désinstaller : .\build\uninstall.ps1 (ou depuis Applications installées)"
     Write-Info 'Les réglages et les journées restent dans %LOCALAPPDATA%\7pace-auto.'
     if (-not $auDemarrage) {
-        Write-Info 'Sans -Startup, le collecteur démarre à la première ouverture du terminal.'
+        Write-Info 'Sans -Startup, le collecteur démarre à la première ouverture de l''app.'
     }
 } finally {
     if ($temporaire -and (Test-Path -LiteralPath $temporaire)) {

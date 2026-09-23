@@ -10,12 +10,12 @@ L’application n’est pas une seconde interface 7pace : elle n’en lit aucune
 aucun historique et ne permet aucune correction après envoi.
 
 La collecte ne dépend d’aucune fenêtre ouverte. Un collecteur sans interface la porte du
-démarrage de la session jusqu’à son arrêt explicite ; le terminal n’est qu’une vue que l’on
-ouvre et referme sans conséquence.
+démarrage de la session jusqu’à son arrêt explicite ; l’app n’est qu’une vue que l’on
+ouvre et quitte sans conséquence.
 
 ## Frontière des responsabilités
 
-- Le collecteur est seul à relever, à écrire et à notifier. Le terminal ne fait qu’afficher
+- Le collecteur est seul à relever et à écrire. L’app ne fait qu’afficher
   et demander.
 - Le dépôt Git configuré indique le travail courant.
 - Azure DevOps résout automatiquement le Bug ou PBI extrait de la branche vers son Fix ou sa
@@ -50,12 +50,12 @@ portant le même numéro restent deux worklogs distincts.
 
 ### Collecte
 
-- Le collecteur démarre automatiquement avec la session Windows, sans fenêtre ni icône.
-- Fermer le terminal, par la croix comme par CTRL+C, ne l’arrête pas.
-- Ouvrir le terminal alors qu’aucun collecteur ne tourne en démarre un en silence.
+- L’app démarre avec la session Windows, en widget, et lance le collecteur s’il ne tourne pas.
+- Quitter l’app ne l’arrête pas ; un collecteur disparu est relancé en silence par l’app.
 - Un seul collecteur écrit dans un profil de données donné ; un second lancement se retire.
-- Arrêter la collecte est une action de menu explicite et confirmée, qui fait fermer au
-  collecteur ses créneaux et son dernier relevé avant de sortir.
+- Arrêter la collecte est une action explicite des réglages, confirmée par un appui maintenu,
+  qui fait fermer au collecteur ses créneaux et son dernier relevé avant de sortir. L’app ne le
+  relance plus alors que sur demande.
 - Elle surveille un seul dépôt Git et uniquement les horaires de travail configurés.
 - La branche active continue d’être comptée lorsque le poste reste allumé mais inactif.
 - Une interruption de collecte devient un créneau « À attribuer » plutôt qu’une supposition.
@@ -67,10 +67,9 @@ portant le même numéro restent deux worklogs distincts.
 ### File du matin
 
 - La journée calendaire en cours n’est jamais envoyable.
-- Une notification Windows unique par journée calendaire signale les journées terminées en
-  attente. Elle part du collecteur, jamais avant le début des horaires de travail, et un
-  redémarrage du collecteur ne la rejoue pas. Cliquer la notification ouvre le terminal.
-- Le terminal présente la plus ancienne journée en attente.
+- Quand une journée terminée se met à attendre, la fenêtre principale s’ouvre d’elle-même,
+  une seule fois par date.
+- La fenêtre présente la plus ancienne journée en attente.
 - Après traitement, il avance vers la suivante ; il ne fournit aucun sélecteur de date ni
   accès aux journées closes.
 - Une journée peut être explicitement ignorée après confirmation forte. Aucun appel 7pace
@@ -79,7 +78,8 @@ portant le même numéro restent deux worklogs distincts.
 ### Consultation de la journée en cours
 
 La collecte est silencieuse : sans retour, une panne de relevé ne se découvre que le
-lendemain, quand la journée arrive vide ou fausse. Le terminal expose donc une consultation
+lendemain, quand la journée arrive vide ou fausse. Le widget montre en permanence l’état du
+suivi, et la fenêtre expose une consultation
 de la journée calendaire en cours, en lecture seule et disponible même lorsqu’une journée
 terminée attend déjà d’être traitée.
 
@@ -98,10 +98,12 @@ attendent.
 
 ### Ajustement
 
-Le terminal affiche la liste chronologique des créneaux. L’utilisateur peut :
+La fenêtre affiche les créneaux sur une frise horaire, les chevauchements sur des voies
+distinctes. L’utilisateur peut :
 
-- ajouter un créneau ;
-- modifier son début, sa fin ou son numéro de work item ;
+- ajouter un créneau en glissant dans le vide, ou combler un trou d’un clic ;
+- déplacer un créneau ou étirer ses bords, aimantés à 5 minutes ;
+- modifier son début, sa fin ou son numéro de work item, choisi parmi ceux de la journée ;
 - supprimer un créneau ;
 - conserver volontairement des créneaux qui se chevauchent.
 
@@ -110,8 +112,9 @@ l’envoi. Tout créneau « À attribuer » bloque l’envoi complet.
 
 ### Confirmation et envoi
 
-La confirmation affiche chaque créneau, son numéro, les chevauchements, les trous et le total
-imputable, puis exige la saisie explicite de `ENVOYER`.
+La frise montre déjà chaque créneau, son numéro, les chevauchements, les trous et le total
+imputable. L’envoi part d’un appui maintenu d’une seconde sur « Envoyer », sans autre
+boîte de dialogue ; un clic ne suffit pas.
 
 Les worklogs sont envoyés séquentiellement. En cas d’échec partiel :
 
@@ -121,34 +124,32 @@ Les worklogs sont envoyés séquentiellement. En cas d’échec partiel :
 
 Après un envoi complet :
 
-- le terminal affiche un reçu jusqu’à sa fermeture ;
+- la fenêtre affiche le compte rendu de l’envoi ;
 - le détail local de la journée est supprimé ;
 - seul un marqueur de date close est conservé pour empêcher sa réapparition ;
 - toute correction ultérieure se fait directement dans 7pace.
 
-## Interface terminal
+## Interface
 
-Le terminal est l’unique interface prise en charge. Son écran métier contient uniquement :
+L’interface est une app de bureau Tauri à deux fenêtres sans cadre, aux couleurs
+arachnid-dark du poste.
 
-- la journée en attente et ses créneaux ;
-- les avertissements de trous et de chevauchements ;
-- les actions Ajouter/corriger, Supprimer, Envoyer et Ignorer la journée ;
-- l’action rapide Démarrer/arrêter « À attribuer » pour la journée en cours ;
-- un état compact du suivi Git ;
-- l’état de la liaison avec le collecteur, et son arrêt complet ou sa reprise ;
-- l’accès à la consultation en lecture seule de la journée en cours.
+Le widget est une ligne toujours au premier plan : pastille d’état (verte quand le suivi
+tourne, ambre hors horaires, rouge en cas de panne, de suivi figé ou de collecteur
+injoignable), ticket suivi, chrono du créneau en cours et bouton du chrono rapide
+« À attribuer ». Un clic ouvre la fenêtre ; un clic droit propose Ouvrir et Quitter.
 
-Les seuls écrans secondaires sont Réglages, Jeton 7pace et Mise à jour. Les réglages
-conservent le dépôt, la fréquence de relevé, l’organisation Azure DevOps, le compte 7pace, les
-horaires de travail et les options de mise à jour. Ils ne contiennent aucun catalogue
-d’activités : l’utilisateur saisit les numéros requis.
+La fenêtre contient uniquement la frise de la journée en attente, l’édition du créneau
+sélectionné, le total, Envoyer et Ignorer, et une bascule vers la journée en cours en lecture
+seule. La fermer la replie en widget.
 
-Plusieurs terminaux peuvent être ouverts sur le même profil : aucun n’écrit, et le collecteur
-sérialise les demandes qui modifient une journée. Un collecteur injoignable est annoncé tel
-quel ; l’interface ne laisse jamais croire que le temps continue d’être compté.
+Un seul panneau secondaire regroupe les réglages (dépôt, organisation Azure DevOps, compte et
+jeton 7pace, horaires), la mise à jour, l’arrêt ou la relance du collecteur et « Quitter
+l’app ». Il ne contient aucun catalogue d’activités : l’utilisateur saisit les numéros requis.
 
-L’ancienne interface graphique affiche un bandeau visible « Version dépréciée » et oriente
-vers la version terminal. Elle ne reçoit plus de nouvelle fonctionnalité.
+L’app n’écrit rien elle-même, et le collecteur sérialise les demandes qui modifient une
+journée. Un collecteur injoignable est annoncé tel quel ; l’interface ne laisse jamais croire
+que le temps continue d’être compté.
 
 ## Non-objectifs
 
@@ -173,15 +174,15 @@ vers la version terminal. Elle ne reçoit plus de nouvelle fonctionnalité.
 7. Les chevauchements sont autorisés et signalés.
 8. Les trous sont signalés mais n’interdisent pas l’envoi.
 9. Un numéro manquant ou un chrono rapide encore actif interdit l’envoi.
-10. La confirmation montre la liste exacte et le total avant tout appel 7pace.
+10. L’envoi exige un appui maintenu ; la frise montre la liste exacte et le total avant.
 11. Chaque créneau produit un worklog distinct, même si plusieurs portent le même numéro.
 12. Après un échec partiel, seuls les créneaux acceptés sont verrouillés et exclus de la
     tentative suivante.
 13. Après succès complet, le détail local est supprimé et seul le marqueur de date close
     subsiste.
 14. Ignorer une journée la clôt localement sans contacter 7pace.
-15. Le terminal conserve uniquement les accès Réglages, Jeton 7pace et Mise à jour.
-16. L’ancienne interface graphique affiche clairement qu’elle est dépréciée.
+15. Hors de la journée, l’app ne donne accès qu’au panneau des réglages.
+16. Le widget passe au rouge « injoignable » moins de 10 s après la perte du collecteur.
 17. Un relevé Git raté ne ferme pas le créneau en cours, n’ouvre pas de doublon à la reprise
     et ne produit jamais d’intervalle « poste en veille ou arrêté ».
 18. La journée en cours est consultable en lecture seule à tout moment, y compris quand une
@@ -189,13 +190,13 @@ vers la version terminal. Elle ne reçoit plus de nouvelle fonctionnalité.
     envoyable.
 19. La consultation distingue un suivi vivant d’un suivi figé, et n’écrit rien sur le disque
     pour se rafraîchir.
-20. Fermer le terminal, ou l’interrompre par CTRL+C, laisse la collecte se poursuivre.
-21. Ouvrir le terminal sans collecteur en démarre un, puis s’y connecte ; le rouvrir ensuite
+20. Fermer la fenêtre ou quitter l’app laisse la collecte se poursuivre.
+21. Ouvrir l’app sans collecteur en démarre un, puis s’y connecte ; la rouvrir ensuite
     retrouve l’état et les données déjà collectées.
 22. Un second collecteur lancé sur le même profil de données se retire sans rien écrire.
-23. Seule une action de menu explicite et confirmée arrête la collecte de fond, et le
+23. Seule une action explicite et confirmée des réglages arrête la collecte de fond, et le
     collecteur écrit son dernier relevé avant de sortir.
 24. Une liaison perdue est annoncée, jamais masquée ; une écriture interrompue n’est pas
     rejouée automatiquement.
-25. Une mise à jour attend la sortie du collecteur et du terminal, ne laisse jamais deux
+25. Une mise à jour attend la sortie du collecteur et de l’app, ne laisse jamais deux
     versions actives, et préserve réglages, jeton et journées.

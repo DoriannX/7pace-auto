@@ -1,0 +1,8 @@
+{
+  "repoPath": "C:\\dev\\depot",
+  "pollSeconds": 30,
+  "azureOrganization": "https://dev.azure.com/mon-organisation",
+  "sevenPaceAccount": "mon-compte",
+  "workWindows": [[510, 750], [810, 1020]],
+  "updateRepository": "DoriannX/7pace-auto"
+}

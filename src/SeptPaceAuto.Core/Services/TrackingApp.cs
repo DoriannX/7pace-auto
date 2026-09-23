@@ -12,7 +12,7 @@ namespace SeptPaceAuto.Services;
 
 /// <summary>
 /// Coordination du suivi Git, des journées en attente, de la résolution des éléments de
-/// travail, de l'envoi 7pace et des mises à jour du terminal.
+/// travail, de l'envoi 7pace et des mises à jour de l'application.
 ///
 /// L'application écrit dans 7pace et n'en lit jamais rien : une journée envoyée est close,
 /// son détail local est supprimé, et 7pace fait seul autorité ensuite.
@@ -417,9 +417,9 @@ internal sealed class TrackingApp : ITrackingApp
 
     /// <summary>
     /// Prépare la nouvelle version puis lance le programme de mise à jour. Celui-ci attend
-    /// la fermeture du collecteur et du terminal demandeur avant de toucher aux fichiers :
+    /// la fermeture du collecteur et de l'app demandeuse avant de toucher aux fichiers :
     /// aucun binaire n'est verrouillé pendant le remplacement, et il relance ensuite le
-    /// collecteur. Le collecteur et le terminal se ferment dès que le résultat est positif.
+    /// collecteur. Le collecteur et l'app se ferment dès que le résultat est positif.
     /// </summary>
     private async Task<string> ApplyUpdateAsync(JsonElement parameters, CancellationToken ct)
     {
@@ -434,7 +434,7 @@ internal sealed class TrackingApp : ITrackingApp
             && pid.ValueKind == JsonValueKind.Number && pid.TryGetInt32(out var number) && number > 0
             ? number
             : (int?)null;
-        var reopen = !parameters.TryGetProperty("reopenTerminal", out var flag) || flag.ValueKind != JsonValueKind.False;
+        var reopen = !parameters.TryGetProperty("reopenApp", out var flag) || flag.ValueKind != JsonValueKind.False;
 
         try
         {

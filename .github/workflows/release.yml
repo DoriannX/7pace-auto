@@ -1,6 +1,6 @@
 name: Publication
 
-# Un tag « vX.Y.Z » suffit : il produit l'archive terminal que l'application
+# Un tag « vX.Y.Z » suffit : il produit l'archive que l'application
 # télécharge pour se mettre à jour.
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   release:
-    name: Construire et publier le collecteur et son terminal
+    name: Construire et publier le collecteur et l'app
     runs-on: windows-latest
 
     steps:
@@ -24,31 +24,42 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Installer Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Vérifier la compilation
         shell: pwsh
         run: |
           # Le dépôt n'a pas de fichier solution : chaque projet d'entrée est compilé
           # explicitement, sinon MSBuild ne trouve rien à la racine.
-          foreach ($projet in @('src/SeptPaceAuto.Agent', 'src/SeptPaceAuto.Terminal', 'tests/SeptPaceAuto.Tests')) {
+          foreach ($projet in @('src/SeptPaceAuto.Agent', 'tests/SeptPaceAuto.Tests')) {
             dotnet build $projet -c Release -warnaserror --nologo
             if ($LASTEXITCODE -ne 0) { throw "La compilation de $projet a échoué." }
           }
+          corepack pnpm --dir app install --frozen-lockfile
+          corepack pnpm --dir app test
+          if ($LASTEXITCODE -ne 0) { throw "Les tests de l'app ont échoué." }
 
-      - name: Publier le collecteur et son terminal
+      - name: Publier le collecteur et l'app
         shell: pwsh
         run: ./build/publish.ps1 -Version "${{ github.ref_name }}"
 
       - name: Vérifier les artefacts
         shell: pwsh
         run: |
-          $attendu = 'artifacts/SeptPaceAuto.Terminal-win-x64.zip'
+          $attendu = 'artifacts/SeptPaceAuto-win-x64.zip'
           if (-not (Test-Path -LiteralPath $attendu)) { throw "Artefact absent : $attendu" }
 
           # La mise à jour automatique refuse une archive amputée : autant le voir ici.
           Add-Type -AssemblyName 'System.IO.Compression.FileSystem'
           $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $attendu))
           try {
-            foreach ($nom in @('SeptPaceAuto.Agent.exe', 'SeptPaceAuto.Terminal.exe')) {
+            foreach ($nom in @('SeptPaceAuto.Agent.exe', 'SeptPaceAuto.App.exe')) {
               if (-not ($archive.Entries | Where-Object { $_.FullName -eq $nom })) {
                 throw "L'archive ne contient pas $nom a sa racine."
               }
@@ -62,6 +73,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
-          files: artifacts/SeptPaceAuto.Terminal-win-x64.zip
+          files: artifacts/SeptPaceAuto-win-x64.zip
           generate_release_notes: true
           fail_on_unmatched_files: true

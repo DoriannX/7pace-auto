@@ -2,19 +2,23 @@
 
 ## Collecteur
 
-Processus de fond, sans fenêtre, qui relève la branche Git, tient les journées, écrit sur le disque et envoie la notification du matin. Il démarre avec la session Windows et continue quel que soit le sort du terminal. Un seul collecteur existe par profil de données, et lui seul écrit.
+Processus de fond, sans fenêtre, qui relève la branche Git, tient les journées et écrit sur le disque. L’app le lance à l’ouverture de session et il continue quel que soit son sort. Un seul collecteur existe par profil de données, et lui seul écrit.
 
-## Terminal
+## App
 
-Interface en ligne de commande. Elle ne collecte rien : elle interroge le collecteur, affiche ce qu’il sait et lui transmet les corrections. La fermer ne ferme que l’interface.
+Interface de bureau, faite du widget et de la fenêtre. Elle ne collecte rien : elle interroge le collecteur, affiche ce qu’il sait et lui transmet les corrections. La quitter ne ferme que l’interface.
+
+## Widget
+
+Ligne toujours au premier plan qui montre l’état du suivi, le ticket suivi et son chrono, et porte le chrono rapide. C’est la forme repliée de l’app.
 
 ## Liaison
 
-Canal local entre un terminal et le collecteur de son profil de données, réservé au compte Windows qui l’a ouvert. Son état est visible en permanence dans le menu : un collecteur injoignable est annoncé comme tel, jamais présenté comme un suivi qui tourne.
+Canal local entre l’app et le collecteur de son profil de données, réservé au compte Windows qui l’a ouvert. Son état est visible en permanence dans le widget : un collecteur injoignable est annoncé comme tel, jamais présenté comme un suivi qui tourne.
 
 ## Arrêt complet du suivi
 
-Action explicite et confirmée qui demande au collecteur de fermer ses créneaux, d’écrire son dernier relevé puis de sortir. Elle se distingue de la fermeture du terminal, qui ne touche pas à la collecte.
+Action explicite et confirmée qui demande au collecteur de fermer ses créneaux, d’écrire son dernier relevé puis de sortir. Elle se distingue de la sortie de l’app, qui ne touche pas à la collecte.
 
 ## Profil de données
 
@@ -26,7 +30,7 @@ La date calendaire actuelle. L’application y collecte automatiquement les cré
 
 ## Consultation de la journée en cours
 
-Vue du terminal, en lecture seule, qui montre les créneaux déjà collectés aujourd’hui et la santé du suivi. Elle sert à vérifier que la collecte tourne ; elle ne rend la journée en cours ni modifiable ni envoyable.
+Vue de la fenêtre, en lecture seule, qui montre les créneaux déjà collectés aujourd’hui et la santé du suivi. Elle sert à vérifier que la collecte tourne ; elle ne rend la journée en cours ni modifiable ni envoyable.
 
 ## Suivi figé
 

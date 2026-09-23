@@ -29,9 +29,9 @@ public sealed class UpdateScriptTests
     {
         var texte = SeptPaceAuto.Services.GitHubUpdateService.Script(
             @"C:\staged",
-            (@"C:\install\SeptPaceAuto.Agent.exe", @"C:\install\SeptPaceAuto.Terminal.exe", @"C:\install"),
+            (@"C:\install\SeptPaceAuto.Agent.exe", @"C:\install\SeptPaceAuto.App.exe", @"C:\install"),
             clientPid: 4242,
-            reopenTerminal: true);
+            reopenApp: true);
 
         Assert.Contains(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture) + " 4242", texte, StringComparison.Ordinal);
         Assert.Contains("for %%P in (%PIDS%)", texte, StringComparison.Ordinal);
@@ -40,19 +40,19 @@ public sealed class UpdateScriptTests
         Assert.Contains("robocopy \"%STAGED%\" \"%INSTALL%\"", texte, StringComparison.Ordinal);
         Assert.Contains("robocopy \"%BACKUP%\" \"%INSTALL%\"", texte, StringComparison.Ordinal);
         Assert.Contains("start \"\" \"%AGENT%\"", texte, StringComparison.Ordinal);
-        Assert.Contains("start \"\" \"%TERMINAL%\"", texte, StringComparison.Ordinal);
+        Assert.Contains("start \"\" \"%APP%\" --widget", texte, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Le_terminal_n_est_rouvert_que_s_il_l_a_demande()
+    public void L_app_n_est_rouverte_que_si_elle_l_a_demande()
     {
         var texte = SeptPaceAuto.Services.GitHubUpdateService.Script(
             @"C:\staged",
-            (@"C:\install\SeptPaceAuto.Agent.exe", @"C:\install\SeptPaceAuto.Terminal.exe", @"C:\install"),
+            (@"C:\install\SeptPaceAuto.Agent.exe", @"C:\install\SeptPaceAuto.App.exe", @"C:\install"),
             clientPid: null,
-            reopenTerminal: false);
+            reopenApp: false);
 
-        Assert.DoesNotContain("start \"\" \"%TERMINAL%\"", texte, StringComparison.Ordinal);
+        Assert.DoesNotContain("%APP%\" --widget", texte, StringComparison.Ordinal);
         Assert.Contains("start \"\" \"%AGENT%\"", texte, StringComparison.Ordinal);
     }
 
@@ -76,9 +76,9 @@ public sealed class UpdateScriptTests
         var script = Path.Combine(racine, "apply.cmd");
         var texte = SeptPaceAuto.Services.GitHubUpdateService.Script(
             staged,
-            (collecteur, Path.Combine(install, "SeptPaceAuto.Terminal.exe"), install),
+            (collecteur, Path.Combine(install, "SeptPaceAuto.App.exe"), install),
             clientPid: enPlace.Id,
-            reopenTerminal: false);
+            reopenApp: false);
         File.WriteAllText(script, texte, new UTF8Encoding(false));
 
         // Le profil temporaire est imposé au script : le collecteur qu'il relancera doit
@@ -143,7 +143,7 @@ public sealed class UpdateScriptTests
             var source = Path.Combine(AppContext.BaseDirectory, piece);
             if (File.Exists(source)) File.Copy(source, Path.Combine(folder, piece), overwrite: true);
         }
-        File.WriteAllText(Path.Combine(folder, "SeptPaceAuto.Terminal.exe.txt"), "place tenue");
+        File.WriteAllText(Path.Combine(folder, "SeptPaceAuto.App.exe.txt"), "place tenue");
         if (marqueur) File.WriteAllText(Path.Combine(folder, Marqueur), "1.2.0");
     }
 

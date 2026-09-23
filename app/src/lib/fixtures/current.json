@@ -1,0 +1,7 @@
+{
+  "tracking": { "branch": "feature/48400-export-pdf", "bug": 48400, "workItem": 48402, "label": "Export PDF des relevés", "quickRunning": false, "state": "running" },
+  "entries": [
+    { "id": 1, "start": "08:30", "end": "09:10", "workItem": 175, "label": "Stand-up", "source": "manual", "sentAt": null, "bug": null },
+    { "id": 2, "start": "09:10", "end": "09:10", "workItem": 48402, "label": "Export PDF des relevés", "source": "git", "sentAt": null, "bug": 48400 }
+  ]
+}

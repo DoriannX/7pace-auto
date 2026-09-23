@@ -6,9 +6,9 @@ using SeptPaceAuto.Services;
 namespace SeptPaceAuto.Agent;
 
 /// <summary>
-/// Collecteur de fond : le seul processus qui relève la branche Git, tient les journées,
-/// écrit sur le disque et notifie. Il démarre avec la session Windows, n'a pas de fenêtre,
-/// et survit à la fermeture du terminal — c'est tout l'intérêt de l'avoir séparé.
+/// Collecteur de fond : le seul processus qui relève la branche Git, tient les journées et
+/// écrit sur le disque. Il n'a pas de fenêtre et survit à la fermeture de l'app — c'est tout
+/// l'intérêt de l'avoir séparé.
 ///
 /// Un collecteur par profil de données, jamais deux : deux verrous nommés le garantissent,
 /// dont celui de l'ancien terminal tout-en-un, pour qu'une version 1.0.9 restée installée ne
@@ -73,9 +73,6 @@ internal static class AgentProgram
             await using var host = new AgentHost(app, endpoint, AgentInfo.Describe(endpoint));
             host.Start();
 
-            await using var announcer = new MorningAnnouncer(app, static () => DateTime.Now, Terminal(), AppPaths.Announced);
-            announcer.Start();
-
             await Task.WhenAny(host.StopRequested, Cancelled(lifetime.Token)).ConfigureAwait(false);
             return 0;
         }
@@ -95,20 +92,6 @@ internal static class AgentProgram
         var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         ct.Register(() => waiting.TrySetResult());
         return waiting.Task;
-    }
-
-    /// <summary>Terminal installé à côté : c'est lui qu'ouvre un clic sur la notification.</summary>
-    private static string? Terminal()
-    {
-        try
-        {
-            var path = Path.Combine(AppContext.BaseDirectory, AgentEndpoint.TerminalExecutable);
-            return File.Exists(path) ? path : null;
-        }
-        catch (Exception error) when (error is ArgumentException or IOException or UnauthorizedAccessException)
-        {
-            return null;
-        }
     }
 
     // ---------- commandes d'outillage ----------

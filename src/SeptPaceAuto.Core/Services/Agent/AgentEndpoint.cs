@@ -57,7 +57,7 @@ public sealed class AgentEndpoint
     public const int Protocol = 1;
 
     public const string AgentExecutable = "SeptPaceAuto.Agent.exe";
-    public const string TerminalExecutable = "SeptPaceAuto.Terminal.exe";
+    public const string AppExecutable = "SeptPaceAuto.App.exe";
 
     private AgentEndpoint(string dataFolder)
     {

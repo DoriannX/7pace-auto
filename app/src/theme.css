@@ -1,0 +1,111 @@
+/* arachnid-dark : valeurs recopiées de dotfiles/wezterm/palette.lua. */
+:root {
+  --bg-deep: #0a0507;
+  --bg-surface: #150b0e;
+  --bg-raised: #1e1114;
+  --border: #2a1518;
+  --border-strong: #3d1f24;
+  --text: #e8ddd9;
+  --text-dim: #6c5556;
+  --text-muted: #9a8a87;
+  --accent: #d8232e;
+  --accent-bright: #f0454a;
+  --accent-dim: #7a1218;
+  --amber: #c86a32;
+  --amber-bright: #e8a33d;
+  --magenta: #a8386b;
+  --error: #ff4d5e;
+  --success: #6fcf7f;
+  --info: #c77dbb;
+  --blue: #8a7fb8;
+  --cyan: #6fa8a0;
+  --glass: rgba(10, 5, 7, 0.92);
+
+  color-scheme: dark;
+  color: var(--text);
+  font-family: 'JetBrainsMono Nerd Font', 'JetBrainsMono NF', 'JetBrains Mono', Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+* {
+  box-sizing: border-box;
+  border-radius: 0;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 1px solid var(--border-strong);
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--text-muted);
+}
+
+button:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+button.ghost {
+  border-color: transparent;
+}
+
+button.ghost:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+input {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  padding: 3px 6px;
+  outline: none;
+  user-select: text;
+}
+
+input:focus {
+  border-color: var(--accent);
+}
+
+::selection {
+  background: var(--accent-dim);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.dim {
+  color: var(--text-dim);
+}
+
+.error {
+  color: var(--error);
+}
+
+.ok {
+  color: var(--success);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

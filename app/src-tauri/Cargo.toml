@@ -1,0 +1,29 @@
+[package]
+name = "septpaceauto-app"
+version = "2.0.0"
+description = "7pace auto : fenêtre de correction et widget de suivi"
+edition = "2021"
+publish = false
+
+[lib]
+name = "septpaceauto_app_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

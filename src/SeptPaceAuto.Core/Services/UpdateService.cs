@@ -29,7 +29,7 @@ public sealed record UpdateInfo(
     [property: JsonPropertyName("error")] string? Error);
 
 /// <summary>
-/// Mise à jour du terminal depuis l’archive publiée sur GitHub. L’installation est réservée
+/// Mise à jour de l'application depuis l’archive publiée sur GitHub. L’installation est réservée
 /// au dossier posé par <c>build/install.ps1</c> : une compilation locale n’est jamais
 /// remplacée par une publication.
 /// </summary>
@@ -48,11 +48,11 @@ public interface IUpdateService
 
     /// <summary>
     /// Lance le script d'installation ; l'appelant doit quitter juste après. Le script
-    /// attend la fin du collecteur et du terminal demandeur avant de toucher aux fichiers.
+    /// attend la fin du collecteur et de l'app demandeuse avant de toucher aux fichiers.
     /// </summary>
-    /// <param name="clientPid">Terminal à attendre en plus du collecteur, nul quand il n'y en a pas.</param>
-    /// <param name="reopenTerminal">Rouvre le terminal après l'installation.</param>
-    void LaunchUpdater(string stagedFolder, int? clientPid, bool reopenTerminal);
+    /// <param name="clientPid">App à attendre en plus du collecteur, nulle quand il n'y en a pas.</param>
+    /// <param name="reopenApp">Rouvre l'app, en widget, après l'installation.</param>
+    void LaunchUpdater(string stagedFolder, int? clientPid, bool reopenApp);
 }
 
 /// <summary>Point d'entrée unique du service de mise à jour.</summary>
@@ -68,13 +68,13 @@ public static class UpdateServiceFactory
 internal sealed class GitHubUpdateService : IUpdateService
 {
     /// <summary>Nom figé de l'archive publiée, partagé avec build/publish.ps1.</summary>
-    public const string AssetName = "SeptPaceAuto.Terminal-win-x64.zip";
+    public const string AssetName = "SeptPaceAuto-win-x64.zip";
 
     /// <summary>
-    /// L'archive doit porter les deux exécutables à sa racine : le collecteur de fond et son
-    /// terminal. Une archive d'avant la séparation est refusée plutôt qu'installée à moitié.
+    /// L'archive doit porter les deux exécutables à sa racine : le collecteur de fond et
+    /// l'app. Une archive incomplète est refusée plutôt qu'installée à moitié.
     /// </summary>
-    private static readonly string[] Executables = { AgentEndpoint.AgentExecutable, AgentEndpoint.TerminalExecutable };
+    private static readonly string[] Executables = { AgentEndpoint.AgentExecutable, AgentEndpoint.AppExecutable };
 
     /// <summary>
     /// Une vérification ne bloque jamais l'interface : le pont abandonne à 20 s, donc la
@@ -221,7 +221,7 @@ internal sealed class GitHubUpdateService : IUpdateService
         }
     }
 
-    /// <summary>Lit la version et l’archive terminal de la publication.</summary>
+    /// <summary>Lit la version et l’archive de la publication.</summary>
     private UpdateInfo Read(JsonElement release)
     {
         var latest = Normalize(Text(release, "tag_name"));
@@ -380,7 +380,7 @@ internal sealed class GitHubUpdateService : IUpdateService
     }
 
 
-    public void LaunchUpdater(string stagedFolder, int? clientPid, bool reopenTerminal)
+    public void LaunchUpdater(string stagedFolder, int? clientPid, bool reopenApp)
     {
         if (string.IsNullOrWhiteSpace(stagedFolder) || !Directory.Exists(stagedFolder))
         {
@@ -388,7 +388,7 @@ internal sealed class GitHubUpdateService : IUpdateService
         }
 
         var installation = Installation();
-        var script = Script(stagedFolder, installation, clientPid, reopenTerminal);
+        var script = Script(stagedFolder, installation, clientPid, reopenApp);
 
         Directory.CreateDirectory(UpdateFolder);
         File.WriteAllText(ScriptPath, script, new UTF8Encoding(false));
@@ -410,13 +410,13 @@ internal sealed class GitHubUpdateService : IUpdateService
     }
 
     /// <summary>
-    /// Script de remplacement. Il attend que le collecteur et le terminal demandeur soient
+    /// Script de remplacement. Il attend que le collecteur et l'app demandeuse soient
     /// réellement sortis — sans quoi les binaires resteraient verrouillés —, garde une copie
     /// de l'installation, recopie le dossier préparé, relance le collecteur puis se nettoie.
     /// Une copie qui échoue est annulée : l'installation précédente est remise en place et
     /// le suivi repart dessus, plutôt que de laisser un dossier à moitié remplacé.
     /// </summary>
-    internal static string Script(string staged, (string Agent, string Terminal, string Folder) installation, int? clientPid, bool reopenTerminal)
+    internal static string Script(string staged, (string Agent, string App, string Folder) installation, int? clientPid, bool reopenApp)
     {
         var text = Preamble(installation, clientPid);
         text.Append("set \"STAGED=").Append(Trim(staged)).Append("\"\r\n");
@@ -433,13 +433,13 @@ internal sealed class GitHubUpdateService : IUpdateService
         text.Append("  start \"\" \"%AGENT%\"\r\n");
         text.Append("  exit /b 1\r\n");
         text.Append(")\r\n");
-        Finish(text, reopenTerminal);
+        Finish(text, reopenApp);
         return text.ToString();
     }
 
 
     /// <summary>En-tête commun aux deux scripts : encodage, processus à attendre, journal.</summary>
-    private static StringBuilder Preamble((string Agent, string Terminal, string Folder) installation, int? clientPid)
+    private static StringBuilder Preamble((string Agent, string App, string Folder) installation, int? clientPid)
     {
         var text = new StringBuilder();
         text.Append("@echo off\r\n");
@@ -451,7 +451,7 @@ internal sealed class GitHubUpdateService : IUpdateService
             : Environment.ProcessId.ToString(CultureInfo.InvariantCulture);
         text.Append("set \"PIDS=").Append(pids).Append("\"\r\n");
         text.Append("set \"AGENT=").Append(installation.Agent).Append("\"\r\n");
-        text.Append("set \"TERMINAL=").Append(installation.Terminal).Append("\"\r\n");
+        text.Append("set \"APP=").Append(installation.App).Append("\"\r\n");
         text.Append("set \"LOG=").Append(LogPath).Append("\"\r\n");
         // Le dossier de travail peut avoir disparu entre la préparation et l'exécution :
         // sans lui, les redirections vers le journal échoueraient et rien ne serait copié.
@@ -460,7 +460,7 @@ internal sealed class GitHubUpdateService : IUpdateService
     }
 
     /// <summary>
-    /// Attente de la fermeture du collecteur et du terminal : rien n'est touché avant. Le
+    /// Attente de la fermeture du collecteur et de l'app : rien n'est touché avant. Le
     /// nom de l'image est vérifié en plus du numéro, pour qu'un PID recyclé par un autre
     /// programme ne bloque pas l'installation indéfiniment.
     /// </summary>
@@ -478,13 +478,13 @@ internal sealed class GitHubUpdateService : IUpdateService
     }
 
     /// <summary>
-    /// Relance le collecteur — le suivi est la promesse à tenir —, rouvre le terminal quand
-    /// c'est lui qui a demandé la mise à jour, puis efface ses dossiers et lui-même.
+    /// Relance le collecteur — le suivi est la promesse à tenir —, rouvre l'app en widget
+    /// quand c'est elle qui a demandé la mise à jour, puis efface ses dossiers et lui-même.
     /// </summary>
-    private static void Finish(StringBuilder text, bool reopenTerminal)
+    private static void Finish(StringBuilder text, bool reopenApp)
     {
         text.Append("start \"\" \"%AGENT%\"\r\n");
-        if (reopenTerminal) text.Append("start \"\" \"%TERMINAL%\"\r\n");
+        if (reopenApp) text.Append("start \"\" \"%APP%\" --widget\r\n");
         text.Append("rmdir /s /q \"%STAGED%\" >nul 2>&1\r\n");
         text.Append("rmdir /s /q \"%BACKUP%\" >nul 2>&1\r\n");
         text.Append("del /f /q \"%~f0\" >nul 2>&1\r\n");
@@ -496,27 +496,27 @@ internal sealed class GitHubUpdateService : IUpdateService
 
     /// <summary>
     /// Installation posée par build/install.ps1, seule cible autorisée. Les deux exécutables
-    /// doivent y être : remplacer un collecteur sans son terminal, ou l'inverse, laisserait
+    /// doivent y être : remplacer un collecteur sans son app, ou l'inverse, laisserait
     /// deux versions face à face.
     /// </summary>
-    private static (string Agent, string Terminal, string Folder) Installation()
+    private static (string Agent, string App, string Folder) Installation()
     {
         var folder = Home();
         var expected = Path.Combine(AppPaths.LocalAppData, "Programs", "7pace auto");
         var agent = Path.Combine(folder, AgentEndpoint.AgentExecutable);
-        var terminal = Path.Combine(folder, AgentEndpoint.TerminalExecutable);
+        var app = Path.Combine(folder, AgentEndpoint.AppExecutable);
 
         if (!string.Equals(Path.GetFullPath(folder).TrimEnd('\\', '/'),
                 Path.GetFullPath(expected).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase)
             || !File.Exists(agent)
-            || !File.Exists(terminal))
+            || !File.Exists(app))
         {
             throw new DomainException(
                 "La mise à jour automatique est réservée à l’application installée. " +
                 "Lance build/install.ps1 avant de mettre à jour.");
         }
 
-        return (agent, terminal, folder);
+        return (agent, app, folder);
     }
 
     /// <summary>Dossier du processus courant : le collecteur porte la mise à jour.</summary>

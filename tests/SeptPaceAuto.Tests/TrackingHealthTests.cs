@@ -3,7 +3,6 @@ using System;
 using System.Globalization;
 using System.Threading.Tasks;
 using SeptPaceAuto.Services;
-using SeptPaceAuto.Terminal;
 using Xunit;
 
 namespace SeptPaceAuto.Tests;
@@ -98,18 +97,6 @@ public sealed class TrackingHealthTests
         await harness.PrimeAt(9, 0);
 
         Assert.Equal(expected, harness.Tracker.Health.StaleAfterSeconds);
-    }
-
-    [Fact]
-    public void Ecran_nomme_la_lecture_Git_en_echec_comme_le_menu()
-    {
-        const string state = "git-unreadable";
-        var frame = Views.Render(Views.Day(tracking: Views.Tracking(
-            state: state,
-            label: "Lecture du dépôt Git impossible (git a dépassé le délai) : branche feature/1234-import conservée")));
-
-        Assert.Equal("lecture Git en échec", TrackingLabels.For(state));
-        Assert.Contains("Suivi : lecture Git en échec · Lecture du dépôt Git impossible", frame);
     }
 
     private static DateTime At(string? stamp) =>

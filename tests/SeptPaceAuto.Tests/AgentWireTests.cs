@@ -96,18 +96,4 @@ public sealed class AgentWireTests
     {
         Assert.Equal(AgentEndpoint.KeyOf(@"C:\Temp\7pace"), AgentEndpoint.KeyOf(@"c:\temp\7PACE"));
     }
-
-    [Theory]
-    // Rien à annoncer, ou déjà annoncé : le collecteur se tait.
-    [InlineData(0, 600, 510, null, false)]
-    [InlineData(2, 600, 510, "2026-03-17", false)]
-    // Minuit vient de passer : la journée d'hier attend, mais ce n'est pas encore le matin.
-    [InlineData(2, 5, 510, null, false)]
-    [InlineData(1, 510, 510, null, true)]
-    [InlineData(3, 1020, 510, "2026-03-16", true)]
-    public void La_notification_du_matin_part_une_fois_par_journee(
-        int pending, int minute, int workStart, string? announced, bool expected)
-    {
-        Assert.Equal(expected, MorningAnnouncer.DueNow("2026-03-17", minute, workStart, pending, announced));
-    }
 }

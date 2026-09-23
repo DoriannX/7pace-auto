@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 namespace SeptPaceAuto.Services;
 
 /// <summary>
-/// Accès au cœur métier depuis l'interface. Le terminal ne collecte rien : il parle au
+/// Accès au cœur métier depuis un client .NET (outillage du collecteur, tests). Il ne collecte rien : il parle au
 /// collecteur de fond, et dit clairement quand il ne l'atteint plus.
 /// </summary>
 public interface ITrackingChannel : ITrackingApp
@@ -42,7 +42,7 @@ public interface IAgentLauncher
 }
 
 /// <summary>
-/// Collecteur installé à côté du terminal. SEPTPACE_AGENT permet de désigner un autre
+/// Collecteur installé à côté du client. SEPTPACE_AGENT permet de désigner un autre
 /// exécutable : c'est ce que font les tests, sur un profil de données temporaire.
 /// </summary>
 public sealed class AgentLauncher : IAgentLauncher
@@ -70,10 +70,10 @@ public sealed class AgentLauncher : IAgentLauncher
         if (Executable is not string path) return false;
 
         // Lancement par le shell, volontairement : le collecteur n'hérite alors ni de la
-        // console du terminal ni de ses tuyaux. Sans cela, il resterait accroché à la
+        // console du client ni de ses tuyaux. Sans cela, il resterait accroché à la
         // fenêtre qui l'a démarré — exactement ce que cette séparation vise à supprimer —
         // et garderait ouvertes des sorties qui ne le regardent pas. Il hérite en revanche
-        // de l'environnement, donc du profil SEPTPACE_DATA du terminal.
+        // de l'environnement, donc du profil SEPTPACE_DATA du client.
         var start = new ProcessStartInfo(path)
         {
             UseShellExecute = true,
@@ -94,7 +94,7 @@ public sealed class AgentLauncher : IAgentLauncher
 }
 
 /// <summary>
-/// Terminal vu du côté du tuyau. Il retrouve le collecteur du profil actif, lui transmet
+/// Client .NET du tuyau. Il retrouve le collecteur du profil actif, lui transmet
 /// les appels du contrat et rend les réponses telles quelles.
 ///
 /// Une liaison coupée n'est jamais cachée : la reconnexion est tentée avant chaque appel,
@@ -139,7 +139,7 @@ public sealed class AgentClient : ITrackingChannel
 
     public string? Trouble { get; private set; }
 
-    /// <summary>Le terminal démarre : il rejoint le collecteur, et le lance s'il n'existe pas.</summary>
+    /// <summary>Le client démarre : il rejoint le collecteur, et le lance s'il n'existe pas.</summary>
     public async Task StartAsync(CancellationToken ct) => await ConnectAsync(launchIfMissing: true, ct).ConfigureAwait(false);
 
     public async Task<bool> ConnectAsync(bool launchIfMissing, CancellationToken ct)
@@ -229,7 +229,7 @@ public sealed class AgentClient : ITrackingChannel
         if (!_launcher.Launch())
         {
             Trouble = _launcher.Executable is null
-                ? $"{AgentEndpoint.AgentExecutable} est introuvable à côté du terminal : réinstalle l’application avec build\\install.ps1."
+                ? $"{AgentEndpoint.AgentExecutable} est introuvable à côté du client : réinstalle l’application avec build\\install.ps1."
                 : "Le collecteur n’a pas pu être lancé sur ce poste.";
             return false;
         }
@@ -403,7 +403,7 @@ public sealed class AgentClient : ITrackingChannel
 
     public ValueTask DisposeAsync()
     {
-        // Fermer le terminal ne touche pas au collecteur : seule la liaison se referme.
+        // Fermer le client ne touche pas au collecteur : seule la liaison se referme.
         Drop(null);
         _turn.Dispose();
         return ValueTask.CompletedTask;

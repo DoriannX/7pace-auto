@@ -172,32 +172,6 @@ public sealed class AgentProcessTests
         await client.DisposeAsync();
     }
 
-    [Fact]
-    public async Task Le_terminal_installe_ouvre_la_CLI_puis_laisse_le_collecteur_en_place()
-    {
-        Assert.True(File.Exists(AgentProcessProfile.TerminalExecutable), "Le terminal publié doit être copié à côté des tests.");
-
-        await using var profile = new AgentProcessProfile();
-        var terminal = profile.Start(AgentProcessProfile.TerminalExecutable);
-        await terminal.StandardInput.WriteLineAsync("0");
-        await terminal.StandardInput.FlushAsync();
-
-        // Lecture bornée : si le collecteur héritait des tuyaux du terminal, la sortie ne se
-        // fermerait jamais. C'est un échec de test, pas une suite qui reste suspendue.
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        var sortie = await terminal.StandardOutput.ReadToEndAsync(deadline.Token);
-        Assert.True(await AgentProcessProfile.Exited(terminal, TimeSpan.FromSeconds(30)));
-        Assert.Equal(0, terminal.ExitCode);
-        Assert.Contains("Collecteur : connecté", sortie, StringComparison.Ordinal);
-        Assert.Contains("Arrêter complètement le suivi en arrière-plan", sortie, StringComparison.Ordinal);
-        Assert.Contains("Fermer le terminal", sortie, StringComparison.Ordinal);
-
-        // Le terminal est sorti ; le collecteur qu'il a démarré répond toujours.
-        var client = profile.Client();
-        Assert.True(await client.ConnectAsync(launchIfMissing: false, CancellationToken.None));
-        await client.DisposeAsync();
-    }
-
     private static string Today(string bootstrap)
     {
         using var document = JsonDocument.Parse(bootstrap);

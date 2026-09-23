@@ -1,0 +1,11 @@
+{
+  "pending": 2,
+  "entries": [
+    { "id": 1, "start": "08:30", "end": "10:15", "workItem": 48213, "label": "Import des factures : échéances décalées", "source": "git", "sentAt": null, "bug": 48190 },
+    { "id": 2, "start": "10:15", "end": "10:45", "workItem": null, "label": "Chrono rapide · à attribuer", "source": "quick", "sentAt": null, "bug": null },
+    { "id": 3, "start": "10:45", "end": "12:30", "workItem": 48213, "label": "Import des factures : échéances décalées", "source": "git", "sentAt": null, "bug": 48190 },
+    { "id": 4, "start": "13:40", "end": "15:50", "workItem": null, "label": "Bug #48377 · attribution à compléter", "source": "git", "sentAt": null, "bug": 48377 },
+    { "id": 5, "start": "15:30", "end": "16:00", "workItem": 175, "label": "Stand-up", "source": "manual", "sentAt": null, "bug": null },
+    { "id": 6, "start": "16:00", "end": "16:40", "workItem": 48402, "label": "Export PDF des relevés", "source": "git", "sentAt": null, "bug": 48400 }
+  ]
+}

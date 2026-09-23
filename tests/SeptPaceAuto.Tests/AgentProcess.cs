@@ -34,9 +34,6 @@ internal sealed class AgentProcessProfile : IAsyncDisposable
     public static string AgentExecutable { get; } =
         Path.Combine(AppContext.BaseDirectory, AgentEndpoint.AgentExecutable);
 
-    public static string TerminalExecutable { get; } =
-        Path.Combine(AppContext.BaseDirectory, AgentEndpoint.TerminalExecutable);
-
     public AgentClient Client() => new(Endpoint, new ProcessLauncher(this));
 
     /// <summary>Lance un processus du projet sur ce profil, sans fenêtre, sorties captées.</summary>
