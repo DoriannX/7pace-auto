@@ -35,7 +35,6 @@
   const line: Message | null = $derived(message ?? (link ? { text: link, tone: 'error' } : null))
 
   const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
-  const others = (count: number) => (count === 1 ? 'puis 1 autre journée' : `puis ${count} autres journées`)
 
   function report(failure: unknown) {
     message = { text: describe(failure), tone: 'error' }
@@ -189,12 +188,8 @@
 
     <aside>
       {#if editing && pending}
-        <p class="kicker">À envoyer dans 7pace</p>
-        <h1>{capital(frenchDate(pending.date))}</h1>
-        {#if pending.pending > 1}
-          <p class="dim sub">{others(pending.pending - 1)}</p>
-        {/if}
-        <p class="total"><b>{duration(pending.totalMinutes)}</b> <span class="muted">sur {duration(pending.plannedMinutes)} prévues</span></p>
+        <h1>{capital(frenchDate(pending.date))}{#if pending.pending > 1}<span class="dim more" title="Autres journées en attente">+{pending.pending - 1}</span>{/if}</h1>
+        <p class="total"><b>{duration(pending.totalMinutes)}</b> <span class="dim">/ {duration(pending.plannedMinutes)}</span></p>
 
         {#if current}
           <Editor
@@ -205,26 +200,12 @@
             onclose={() => (selected = null)}
             onerror={(text) => (message = { text, tone: 'error' })}
           />
-        {:else}
-          {#if missing.length}
-            <p class="kicker">À corriger avant l’envoi</p>
-            <ul>
-              {#each missing as entry (entry.id)}
-                <li><button onclick={() => (selected = entry.id)}><span>{entry.start}–{entry.end}</span> <span class="bad">sans ticket</span></button></li>
-              {/each}
-            </ul>
-          {:else}
-            <p class="ok">Chaque créneau a son ticket.</p>
-          {/if}
-          {#if holes.length}
-            <p class="kicker">Non couvert (facultatif)</p>
-            <ul>
-              {#each holes as hole (hole[0])}
-                <li><button onclick={() => create({ start: hole[0], end: hole[1] })}><span>{toTime(hole[0])}–{toTime(hole[1])}</span> <span class="dim">ajouter</span></button></li>
-              {/each}
-            </ul>
-          {/if}
-          <p class="dim hint">Clique un créneau pour le corriger, glisse dans le vide pour en ajouter.</p>
+        {:else if missing.length}
+          <ul>
+            {#each missing as entry (entry.id)}
+              <li><button onclick={() => (selected = entry.id)}><span>{entry.start}–{entry.end}</span> <span class="bad">sans ticket</span></button></li>
+            {/each}
+          </ul>
         {/if}
 
         <div class="actions">
@@ -232,34 +213,29 @@
             <p class="message {line.tone}">{line.text}</p>
           {/if}
           <HoldButton
-            label={block ?? 'Maintenir pour envoyer'}
+            label={block ?? 'Envoyer dans 7pace'}
             tone="accent"
-            title="Maintenir une seconde pour envoyer dans 7pace"
+            title="Maintenir une seconde"
             disabled={busy || block !== null}
             onhold={() => close('submitDay')}
           />
           <div class="links">
-            <button class="ghost" onclick={() => show('today')}>Voir aujourd’hui</button>
-            <HoldButton label="Ignorer cette journée" title="Maintenir une seconde : rien ne part dans 7pace" disabled={busy} onhold={() => close('discardDay')} />
+            <button class="ghost" onclick={() => show('today')}>Aujourd’hui</button>
+            <HoldButton label="Ignorer" title="Maintenir une seconde : rien ne part dans 7pace" disabled={busy} onhold={() => close('discardDay')} />
           </div>
         </div>
       {:else if today}
-        <p class="kicker">Aujourd’hui · lecture seule</p>
-        <h1>{capital(frenchDate(today.date))}</h1>
-        <p class="total"><b>{duration(today.totalMinutes)}</b> <span class="muted">relevées</span></p>
-        <p>
-          Suivi {trackingLabel(today.tracking.state)}{#if today.tracking.state === 'running'} :
-            <span class="muted">{today.tracking.workItem ? `#${today.tracking.workItem} ` : ''}{today.tracking.label}</span>{/if}
+        <h1>Aujourd’hui</h1>
+        <p class="total"><b>{duration(today.totalMinutes)}</b></p>
+        <p class="muted">
+          {#if today.tracking.state === 'running'}{today.tracking.workItem ? `#${today.tracking.workItem} ` : ''}{today.tracking.label}{:else}Suivi {trackingLabel(today.tracking.state)}{/if}
         </p>
-        <p class="dim hint">Cette journée se corrige et s’envoie demain matin.</p>
         <div class="actions">
           {#if line}
             <p class="message {line.tone}">{line.text}</p>
           {/if}
           {#if pending}
             <button class="primary" onclick={() => show('pending')}>Corriger {frenchDate(pending.date)}</button>
-          {:else}
-            <p class="muted">Rien à envoyer pour l’instant.</p>
           {/if}
         </div>
       {/if}
@@ -310,20 +286,15 @@
     border-left: 1px solid var(--border);
   }
 
-  .kicker {
-    margin: 6px 0 0;
-    color: var(--text-dim);
-    font-size: 11px;
-  }
-
   h1 {
     margin: 0;
     font-size: 18px;
     font-weight: 600;
   }
 
-  .sub {
-    margin: -6px 0 0;
+  .more {
+    margin-left: 8px;
+    font-weight: normal;
   }
 
   p {
@@ -353,10 +324,6 @@
 
   .bad {
     color: var(--accent-bright);
-  }
-
-  .hint {
-    font-size: 12px;
   }
 
   .actions {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Entry } from '../lib/types'
-  import { duration, toMinutes, toTime } from '../lib/time'
+  import { toMinutes, toTime } from '../lib/time'
 
   interface Props {
     entry: Entry
@@ -11,8 +11,6 @@
     onerror: (message: string) => void
   }
   let { entry, suggestions, onsave, ondelete, onclose, onerror }: Props = $props()
-
-  const SOURCES: Record<string, string> = { git: 'relevé sur la branche Git', quick: 'chrono hors ticket', gap: 'interruption du suivi', manual: 'saisi à la main' }
 
   let start = $state('')
   let end = $state('')
@@ -60,26 +58,19 @@
   function enter(event: KeyboardEvent) {
     if (event.key === 'Enter') (event.currentTarget as HTMLInputElement).blur()
   }
-
-  const minutes = $derived(toMinutes(entry.end) - toMinutes(entry.start))
 </script>
 
 <section>
-  <p class="kicker">Créneau · {duration(minutes)} · {SOURCES[entry.source] ?? entry.source}</p>
   <div class="times">
     <input bind:value={start} onblur={commit} onkeydown={enter} aria-label="Début" />
     <span class="dim">à</span>
     <input bind:value={end} onblur={commit} onkeydown={enter} aria-label="Fin" />
   </div>
-  <label>
-    <span>Ticket</span>
-    <input bind:value={item} onblur={commit} onkeydown={enter} placeholder="numéro du Fix ou de la Task" inputmode="numeric" />
-  </label>
+  <input bind:value={item} onblur={commit} onkeydown={enter} placeholder="n° du ticket" inputmode="numeric" aria-label="Ticket" />
   {#if entry.label}
     <p class="muted label">{entry.label}</p>
   {/if}
   {#if suggestions.length}
-    <p class="kicker">Tickets de la journée</p>
     <div class="chips">
       {#each suggestions as choice (choice.workItem)}
         <button title={choice.label} onclick={() => pick(choice)}>#{choice.workItem} <span class="muted">{choice.label}</span></button>
@@ -89,7 +80,7 @@
   <div class="row">
     <button class="ghost danger" onclick={() => entry.id !== null && ondelete(entry.id)}>Supprimer</button>
     <span class="grow"></span>
-    <button onclick={onclose}>Terminé</button>
+    <button onclick={onclose}>OK</button>
   </div>
 </section>
 
@@ -103,12 +94,6 @@
     border: 1px solid var(--border-strong);
   }
 
-  .kicker {
-    margin: 0;
-    color: var(--text-dim);
-    font-size: 11px;
-  }
-
   .times {
     display: flex;
     align-items: center;
@@ -118,13 +103,6 @@
   .times input {
     width: 7ch;
     text-align: center;
-  }
-
-  label {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    color: var(--text-muted);
   }
 
   .label {

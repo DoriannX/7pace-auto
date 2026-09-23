@@ -7,7 +7,6 @@
 </script>
 
 <header data-tauri-drag-region>
-  <span class="name" data-tauri-drag-region>7pace auto</span>
   <span class="grow" data-tauri-drag-region></span>
   <button class="ghost icon" title="Réglages" onclick={onsettings}>{'\uf013'}</button>
   <button class="ghost icon" title="Replier en widget" onclick={onclose}>{'\uf00d'}</button>
@@ -22,10 +21,6 @@
     gap: 6px;
     padding: 0 3px 0 14px;
     border-bottom: 1px solid var(--border);
-  }
-
-  .name {
-    color: var(--text-dim);
   }
 
   .grow {
