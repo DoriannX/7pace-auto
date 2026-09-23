@@ -1,26 +1,14 @@
 <script lang="ts">
   interface Props {
-    title: string
-    extra: number
-    toggle: string | null
-    ontoggle: () => void
     onsettings: () => void
     onclose: () => void
   }
-  let { title, extra, toggle, ontoggle, onsettings, onclose }: Props = $props()
-
-  const others = $derived(extra > 1 ? `${extra} autres journées en attente` : 'Une autre journée en attente')
+  let { onsettings, onclose }: Props = $props()
 </script>
 
 <header data-tauri-drag-region>
-  <span class="title" data-tauri-drag-region>{title}</span>
-  {#if extra > 0}
-    <span class="extra" title={others}>+{extra}</span>
-  {/if}
+  <span class="name" data-tauri-drag-region>7pace auto</span>
   <span class="grow" data-tauri-drag-region></span>
-  {#if toggle}
-    <button class="ghost" onclick={ontoggle}>{toggle}</button>
-  {/if}
   <button class="ghost icon" title="Réglages" onclick={onsettings}>{'\uf013'}</button>
   <button class="ghost icon" title="Replier en widget" onclick={onclose}>{'\uf00d'}</button>
 </header>
@@ -36,12 +24,8 @@
     border-bottom: 1px solid var(--border);
   }
 
-  .title {
-    font-weight: 600;
-  }
-
-  .extra {
-    color: var(--amber-bright);
+  .name {
+    color: var(--text-dim);
   }
 
   .grow {

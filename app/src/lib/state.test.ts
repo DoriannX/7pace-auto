@@ -37,8 +37,8 @@ const now = new Date(2026, 8, 23, 11, 0)
 describe('envoi', () => {
   it('bloque tant qu’un créneau est à attribuer ou que le chrono rapide tourne', () => {
     const day = (entries: Entry[]) => ({ date: 'd', entries, holes: [], overlaps: [], totalMinutes: 0, plannedMinutes: 0, unassigned: 0 })
-    expect(submitBlock(day([entry({ workItem: null }), entry({ id: 2, workItem: null })]), false)).toBe('2 créneaux à attribuer')
-    expect(submitBlock(day([entry({})]), true)).toBe('Chrono rapide en cours')
+    expect(submitBlock(day([entry({ workItem: null }), entry({ id: 2, workItem: null })]), false)).toBe('2 créneaux sans ticket')
+    expect(submitBlock(day([entry({})]), true)).toBe('Chrono hors ticket en cours')
     expect(submitBlock(day([entry({ sentAt: 'x' })]), false)).toBe('Rien à envoyer')
     expect(submitBlock(day([entry({}), entry({ id: 2, workItem: null, sentAt: 'x' })]), false)).toBeNull()
   })

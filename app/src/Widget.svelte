@@ -79,8 +79,8 @@
     class="quick"
     class:running={quick}
     disabled={!day || lastOk === null}
-    title={quick ? 'Arrêter le chrono rapide' : 'Démarrer un chrono rapide « à attribuer »'}
-    onclick={toggleQuick}>{quick ? '\uf04d' : '\uf04b'}</button
+    title={quick ? 'Arrêter : le créneau reste à attribuer demain' : 'Compter un moment hors ticket (réunion, aide…), à attribuer demain'}
+    onclick={toggleQuick}>{quick ? 'Arrêter' : 'Hors ticket'}</button
   >
 </div>
 
@@ -145,9 +145,10 @@
   }
 
   .quick {
-    border: none;
-    padding: 0 7px;
+    flex: none;
+    padding: 1px 7px;
     color: var(--text-muted);
+    font-size: 12px;
   }
 
   .quick.running {

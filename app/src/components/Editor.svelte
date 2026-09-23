@@ -1,17 +1,18 @@
 <script lang="ts">
   import type { Entry } from '../lib/types'
-  import { toMinutes, toTime } from '../lib/time'
+  import { duration, toMinutes, toTime } from '../lib/time'
 
   interface Props {
     entry: Entry
     suggestions: { workItem: number; label: string }[]
     onsave: (entry: Entry) => void
     ondelete: (id: number) => void
+    onclose: () => void
     onerror: (message: string) => void
   }
-  let { entry, suggestions, onsave, ondelete, onerror }: Props = $props()
+  let { entry, suggestions, onsave, ondelete, onclose, onerror }: Props = $props()
 
-  const SOURCES: Record<string, string> = { git: 'suivi Git', quick: 'chrono rapide', gap: 'interruption', manual: 'saisie' }
+  const SOURCES: Record<string, string> = { git: 'relevé sur la branche Git', quick: 'chrono hors ticket', gap: 'interruption du suivi', manual: 'saisi à la main' }
 
   let start = $state('')
   let end = $state('')
@@ -27,7 +28,7 @@
     const from = toMinutes(start)
     const to = toMinutes(end)
     if (Number.isNaN(from) || Number.isNaN(to)) {
-      onerror('Indique des horaires au format HH:MM.')
+      onerror('Horaires au format HH:MM.')
       return null
     }
     const raw = item.trim().replace(/^#/, '')
@@ -35,7 +36,7 @@
     if (raw) {
       const number = Number(raw)
       if (!Number.isInteger(number) || number < 1) {
-        onerror('Indique un numéro de ticket entier et positif.')
+        onerror('Le ticket est un numéro entier.')
         return null
       }
       workItem = number
@@ -59,43 +60,95 @@
   function enter(event: KeyboardEvent) {
     if (event.key === 'Enter') (event.currentTarget as HTMLInputElement).blur()
   }
+
+  const minutes = $derived(toMinutes(entry.end) - toMinutes(entry.start))
 </script>
 
 <section>
-  <label>de <input bind:value={start} onblur={commit} onkeydown={enter} size="5" /></label>
-  <label>à <input bind:value={end} onblur={commit} onkeydown={enter} size="5" /></label>
-  <label># <input bind:value={item} onblur={commit} onkeydown={enter} size="8" placeholder="ticket" inputmode="numeric" /></label>
-  {#each suggestions as choice (choice.workItem)}
-    <button class="chip" title={choice.label} onclick={() => pick(choice)}>#{choice.workItem} <span class="muted">{choice.label}</span></button>
-  {/each}
-  <span class="grow"></span>
-  <span class="dim" title={entry.label}>{SOURCES[entry.source] ?? entry.source}</span>
-  <button class="ghost danger" onclick={() => entry.id !== null && ondelete(entry.id)}>Supprimer</button>
+  <p class="kicker">Créneau · {duration(minutes)} · {SOURCES[entry.source] ?? entry.source}</p>
+  <div class="times">
+    <input bind:value={start} onblur={commit} onkeydown={enter} aria-label="Début" />
+    <span class="dim">à</span>
+    <input bind:value={end} onblur={commit} onkeydown={enter} aria-label="Fin" />
+  </div>
+  <label>
+    <span>Ticket</span>
+    <input bind:value={item} onblur={commit} onkeydown={enter} placeholder="numéro du Fix ou de la Task" inputmode="numeric" />
+  </label>
+  {#if entry.label}
+    <p class="muted label">{entry.label}</p>
+  {/if}
+  {#if suggestions.length}
+    <p class="kicker">Tickets de la journée</p>
+    <div class="chips">
+      {#each suggestions as choice (choice.workItem)}
+        <button title={choice.label} onclick={() => pick(choice)}>#{choice.workItem} <span class="muted">{choice.label}</span></button>
+      {/each}
+    </div>
+  {/if}
+  <div class="row">
+    <button class="ghost danger" onclick={() => entry.id !== null && ondelete(entry.id)}>Supprimer</button>
+    <span class="grow"></span>
+    <button onclick={onclose}>Terminé</button>
+  </div>
 </section>
 
 <style>
   section {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
+    flex-direction: column;
     gap: 10px;
-    margin-top: 18px;
-    padding-top: 14px;
-    border-top: 1px solid var(--border);
+    padding: 14px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-strong);
+  }
+
+  .kicker {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+
+  .times {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .times input {
+    width: 7ch;
+    text-align: center;
   }
 
   label {
     display: flex;
-    align-items: center;
-    gap: 6px;
+    flex-direction: column;
+    gap: 4px;
     color: var(--text-muted);
   }
 
-  .chip {
-    max-width: 220px;
+  .label {
+    margin: 0;
+    font-size: 12px;
+  }
+
+  .chips {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .chips button {
+    text-align: left;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    margin-top: 4px;
   }
 
   .grow {

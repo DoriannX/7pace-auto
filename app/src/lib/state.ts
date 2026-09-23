@@ -21,9 +21,9 @@ export function submitBlock(day: DayReview, quickRunning: boolean): string | nul
   const open = day.entries.filter((entry) => !entry.sentAt)
   if (open.length === 0) return 'Rien à envoyer'
   const unassigned = open.filter(isUnassigned).length
-  if (unassigned === 1) return '1 créneau à attribuer'
-  if (unassigned > 1) return `${unassigned} créneaux à attribuer`
-  if (quickRunning) return 'Chrono rapide en cours'
+  if (unassigned === 1) return '1 créneau sans ticket'
+  if (unassigned > 1) return `${unassigned} créneaux sans ticket`
+  if (quickRunning) return 'Chrono hors ticket en cours'
   return null
 }
 
@@ -75,7 +75,7 @@ export function widgetStatus(day: CurrentDay | null, lastOk: number | null, now:
     return { tone: 'alert', text: 'Suivi figé : aucun relevé récent', chrono: null }
   }
   if (tracking.quickRunning) {
-    return { tone: 'ok', text: 'Chrono rapide · à attribuer', chrono: chronoMinutes(day, now) }
+    return { tone: 'ok', text: 'Hors ticket · à attribuer demain', chrono: chronoMinutes(day, now) }
   }
   switch (tracking.state) {
     case 'running':

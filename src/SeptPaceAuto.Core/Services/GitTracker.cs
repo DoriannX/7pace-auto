@@ -26,7 +26,7 @@ internal sealed class GitTracker : IAsyncDisposable
     private static readonly TimeSpan MaximumHold = TimeSpan.FromMinutes(10);
 
     private const int MaxGapDays = 8;
-    private const string QuickLabel = "Chrono rapide · à attribuer";
+    private const string QuickLabel = "Hors ticket · à attribuer";
     private const string GapLabel = "Intervalle à préciser (poste en veille ou arrêté)";
 
     private readonly DayStore _days;

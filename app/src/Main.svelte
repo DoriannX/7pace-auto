@@ -2,13 +2,13 @@
   import { onMount } from 'svelte'
   import { call, describe, onShown, toWidget } from './lib/api'
   import type { CurrentDay, DayReview, Entry, LoadedSettings, NothingPending, Outcome, PendingDay } from './lib/types'
-  import { frenchDate, toTime } from './lib/time'
+  import { duration, frenchDate, minuteOfDay, toTime } from './lib/time'
   import { elapsedHoles, visibleRange, type Span } from './lib/timeline'
-  import { submitBlock, suggestions, trackingLabel } from './lib/state'
+  import { isUnassigned, submitBlock, suggestions, trackingLabel } from './lib/state'
   import TitleBar from './components/TitleBar.svelte'
-  import Timeline from './components/Timeline.svelte'
+  import DayColumn from './components/DayColumn.svelte'
   import Editor from './components/Editor.svelte'
-  import Footer from './components/Footer.svelte'
+  import HoldButton from './components/HoldButton.svelte'
   import Settings from './components/Settings.svelte'
 
   type Message = { text: string; tone: 'error' | 'info' }
@@ -23,18 +23,19 @@
   let ready = $state(false)
   let settingsOpen = $state(false)
   let windows = $state<number[][]>([])
+  let clock = $state(new Date())
 
   const editing = $derived(view === 'pending' && pending !== null)
   const day: DayReview | null = $derived(editing ? pending : today)
-  const holes = $derived(day ? (editing ? day.holes : elapsedHoles(day.holes, day.date, new Date())) : [])
+  const holes = $derived(day ? (editing ? day.holes : elapsedHoles(day.holes, day.date, clock)) : [])
   const range = $derived(visibleRange(windows, day?.entries ?? []))
   const current: Entry | null = $derived(editing && pending ? (pending.entries.find((entry) => entry.id === selected) ?? null) : null)
   const block = $derived(pending ? submitBlock(pending, today?.tracking.quickRunning ?? false) : null)
-  const title = $derived(day ? frenchDate(day.date) : '7pace auto')
-  const extra = $derived(editing && pending ? pending.pending - 1 : 0)
-  const toggle = $derived(editing ? 'Aujourd’hui' : pending ? 'À envoyer' : null)
-  const status = $derived(link ?? (today ? `Suivi ${trackingLabel(today.tracking.state)}` : ''))
-  const line: Message | null = $derived(message ?? (link && editing ? { text: link, tone: 'error' } : null))
+  const missing = $derived(pending ? pending.entries.filter((entry) => !entry.sentAt && isUnassigned(entry)) : [])
+  const line: Message | null = $derived(message ?? (link ? { text: link, tone: 'error' } : null))
+
+  const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+  const others = (count: number) => (count === 1 ? 'puis 1 autre journée' : `puis ${count} autres journées`)
 
   function report(failure: unknown) {
     message = { text: describe(failure), tone: 'error' }
@@ -54,6 +55,7 @@
   }
 
   async function loadToday() {
+    clock = new Date()
     try {
       today = await call<CurrentDay>('currentDay')
       link = null
@@ -66,7 +68,7 @@
     try {
       windows = (await call<LoadedSettings>('loadSettings')).settings.workWindows
     } catch {
-      // Sans réglages, la frise garde les horaires tirés des créneaux.
+      // Sans réglages, la journée garde les horaires tirés des créneaux.
     }
   }
 
@@ -130,8 +132,8 @@
     }
   }
 
-  function flip() {
-    view = editing ? 'today' : 'pending'
+  function show(next: 'pending' | 'today') {
+    view = next
     selected = null
   }
 
@@ -164,34 +166,104 @@
 <svelte:window onkeydown={key} oncontextmenu={menu} />
 
 <div class="shell">
-  <TitleBar {title} {extra} {toggle} ontoggle={flip} onsettings={() => (settingsOpen = !settingsOpen)} onclose={() => toWidget()} />
-  <main>
-    {#if day}
-      <Timeline
-        entries={day.entries}
-        {holes}
-        {windows}
-        {range}
-        editable={editing}
-        {selected}
-        onselect={(id) => (selected = id)}
-        onchange={change}
-        oncreate={create}
-      />
-      {#if current && pending}
-        <Editor
-          entry={current}
-          suggestions={suggestions(pending.entries, current)}
-          onsave={save}
-          ondelete={remove}
-          onerror={(text) => (message = { text, tone: 'error' })}
+  <TitleBar onsettings={() => (settingsOpen = !settingsOpen)} onclose={() => toWidget()} />
+  <div class="body">
+    <main>
+      {#if day}
+        <DayColumn
+          entries={day.entries}
+          {holes}
+          {windows}
+          {range}
+          editable={editing}
+          {selected}
+          now={editing ? null : minuteOfDay(clock)}
+          onselect={(id) => (selected = id)}
+          onchange={change}
+          oncreate={create}
         />
-      {:else if !editing && today}
-        <p class="dim notice">{today.notice}</p>
+      {:else if ready}
+        <p class="error">{link ?? 'Aucune donnée reçue du collecteur.'}</p>
       {/if}
-    {:else if ready}
-      <p class="error">{link ?? 'Aucune donnée reçue du collecteur.'}</p>
-    {/if}
+    </main>
+
+    <aside>
+      {#if editing && pending}
+        <p class="kicker">À envoyer dans 7pace</p>
+        <h1>{capital(frenchDate(pending.date))}</h1>
+        {#if pending.pending > 1}
+          <p class="dim sub">{others(pending.pending - 1)}</p>
+        {/if}
+        <p class="total"><b>{duration(pending.totalMinutes)}</b> <span class="muted">sur {duration(pending.plannedMinutes)} prévues</span></p>
+
+        {#if current}
+          <Editor
+            entry={current}
+            suggestions={suggestions(pending.entries, current)}
+            onsave={save}
+            ondelete={remove}
+            onclose={() => (selected = null)}
+            onerror={(text) => (message = { text, tone: 'error' })}
+          />
+        {:else}
+          {#if missing.length}
+            <p class="kicker">À corriger avant l’envoi</p>
+            <ul>
+              {#each missing as entry (entry.id)}
+                <li><button onclick={() => (selected = entry.id)}><span>{entry.start}–{entry.end}</span> <span class="bad">sans ticket</span></button></li>
+              {/each}
+            </ul>
+          {:else}
+            <p class="ok">Chaque créneau a son ticket.</p>
+          {/if}
+          {#if holes.length}
+            <p class="kicker">Non couvert (facultatif)</p>
+            <ul>
+              {#each holes as hole (hole[0])}
+                <li><button onclick={() => create({ start: hole[0], end: hole[1] })}><span>{toTime(hole[0])}–{toTime(hole[1])}</span> <span class="dim">ajouter</span></button></li>
+              {/each}
+            </ul>
+          {/if}
+          <p class="dim hint">Clique un créneau pour le corriger, glisse dans le vide pour en ajouter.</p>
+        {/if}
+
+        <div class="actions">
+          {#if line}
+            <p class="message {line.tone}">{line.text}</p>
+          {/if}
+          <HoldButton
+            label={block ?? 'Maintenir pour envoyer'}
+            tone="accent"
+            title="Maintenir une seconde pour envoyer dans 7pace"
+            disabled={busy || block !== null}
+            onhold={() => close('submitDay')}
+          />
+          <div class="links">
+            <button class="ghost" onclick={() => show('today')}>Voir aujourd’hui</button>
+            <HoldButton label="Ignorer cette journée" title="Maintenir une seconde : rien ne part dans 7pace" disabled={busy} onhold={() => close('discardDay')} />
+          </div>
+        </div>
+      {:else if today}
+        <p class="kicker">Aujourd’hui · lecture seule</p>
+        <h1>{capital(frenchDate(today.date))}</h1>
+        <p class="total"><b>{duration(today.totalMinutes)}</b> <span class="muted">relevées</span></p>
+        <p>
+          Suivi {trackingLabel(today.tracking.state)}{#if today.tracking.state === 'running'} :
+            <span class="muted">{today.tracking.workItem ? `#${today.tracking.workItem} ` : ''}{today.tracking.label}</span>{/if}
+        </p>
+        <p class="dim hint">Cette journée se corrige et s’envoie demain matin.</p>
+        <div class="actions">
+          {#if line}
+            <p class="message {line.tone}">{line.text}</p>
+          {/if}
+          {#if pending}
+            <button class="primary" onclick={() => show('pending')}>Corriger {frenchDate(pending.date)}</button>
+          {:else}
+            <p class="muted">Rien à envoyer pour l’instant.</p>
+          {/if}
+        </div>
+      {/if}
+    </aside>
     {#if settingsOpen}
       <Settings
         onclose={() => (settingsOpen = false)}
@@ -201,22 +273,7 @@
         }}
       />
     {/if}
-  </main>
-  {#if line}
-    <p class="message {line.tone}">{line.text}</p>
-  {/if}
-  {#if day}
-    <Footer
-      total={day.totalMinutes}
-      planned={day.plannedMinutes}
-      readOnly={!editing}
-      {block}
-      {busy}
-      {status}
-      onsubmit={() => close('submitDay')}
-      ondiscard={() => close('discardDay')}
-    />
-  {/if}
+  </div>
 </div>
 
 <style>
@@ -228,21 +285,105 @@
     border: 1px solid var(--border-strong);
   }
 
-  main {
+  .body {
+    position: relative;
     flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 1fr 320px;
+  }
+
+  main {
     position: relative;
     overflow: auto;
-    padding: 12px 18px;
+    padding: 16px 18px 16px 6px;
   }
 
-  .notice {
-    margin-top: 18px;
+  aside {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+    overflow: auto;
+    padding: 18px;
+    background: var(--bg-surface);
+    border-left: 1px solid var(--border);
   }
 
-  .message {
+  .kicker {
+    margin: 6px 0 0;
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+
+  h1 {
     margin: 0;
-    padding: 6px 18px;
-    border-top: 1px solid var(--border);
+    font-size: 18px;
+    font-weight: 600;
+  }
+
+  .sub {
+    margin: -6px 0 0;
+  }
+
+  p {
+    margin: 0;
+  }
+
+  .total b {
+    font-size: 26px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  li button {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    text-align: left;
+  }
+
+  .bad {
+    color: var(--accent-bright);
+  }
+
+  .hint {
+    font-size: 12px;
+  }
+
+  .actions {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .actions :global(.hold.accent) {
+    padding: 8px 10px;
+  }
+
+  .links {
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .links button,
+  .links :global(.hold) {
+    white-space: nowrap;
+    font-size: 12px;
+    padding: 3px 4px;
+  }
+
+  .links :global(.hold) {
+    border-color: transparent;
   }
 
   .message.info {
@@ -251,5 +392,10 @@
 
   .message.error {
     color: var(--error);
+  }
+
+  .primary {
+    padding: 8px 10px;
+    border-color: var(--accent);
   }
 </style>

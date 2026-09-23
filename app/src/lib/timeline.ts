@@ -42,15 +42,28 @@ export function hourTicks(range: Range): number[] {
 
 /**
  * Répartit les créneaux en voies : deux créneaux qui se chevauchent ne partagent jamais
- * une voie. Premier ajustement, dans l'ordre des débuts.
+ * une voie. Premier ajustement, dans l'ordre des débuts. `columns` donne, pour chaque
+ * créneau, le nombre de voies de son groupe de chevauchements : un créneau seul garde
+ * toute la largeur.
  */
-export function lanes(entries: Entry[]): { lane: Map<number, number>; count: number } {
+export function lanes(entries: Entry[]): { lane: Map<number, number>; columns: Map<number, number>; count: number } {
   const ordered = entries
     .map((entry, index) => ({ key: entry.id ?? -index - 1, start: toMinutes(entry.start), end: toMinutes(entry.end) }))
     .sort((left, right) => left.start - right.start || left.end - right.end)
-  const ends: number[] = []
   const lane = new Map<number, number>()
+  const columns = new Map<number, number>()
+  let ends: number[] = []
+  let group: number[] = []
+  let groupEnd = Number.NEGATIVE_INFINITY
+  let count = 0
+  const closeGroup = () => {
+    for (const key of group) columns.set(key, ends.length)
+    count = Math.max(count, ends.length)
+    ends = []
+    group = []
+  }
   for (const item of ordered) {
+    if (group.length && item.start >= groupEnd) closeGroup()
     let index = ends.findIndex((end) => end <= item.start)
     if (index < 0) {
       index = ends.length
@@ -59,8 +72,11 @@ export function lanes(entries: Entry[]): { lane: Map<number, number>; count: num
       ends[index] = item.end
     }
     lane.set(item.key, index)
+    groupEnd = group.length ? Math.max(groupEnd, item.end) : item.end
+    group.push(item.key)
   }
-  return { lane, count: ends.length }
+  if (group.length) closeGroup()
+  return { lane, columns, count }
 }
 
 /** Glissement dans le vide : null pour un simple clic, sinon un créneau d'au moins un pas. */

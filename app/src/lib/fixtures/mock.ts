@@ -67,7 +67,7 @@ function current() {
   if (git) git.end = toTime(Math.max(toMinutes(git.start) + 1, minute))
   const entries = [...today]
   if (quickStart !== null) {
-    entries.push({ id: 99, start: toTime(quickStart), end: toTime(Math.max(quickStart + 1, minute)), workItem: null, label: 'Chrono rapide · à attribuer', source: 'quick' })
+    entries.push({ id: 99, start: toTime(quickStart), end: toTime(Math.max(quickStart + 1, minute)), workItem: null, label: 'Hors ticket · à attribuer', source: 'quick' })
   }
   return {
     ...review(dateKey(now), entries),

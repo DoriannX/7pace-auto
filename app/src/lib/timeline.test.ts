@@ -26,12 +26,21 @@ describe('frise', () => {
   })
 
   it('range les chevauchements sur des voies distinctes', () => {
-    const { lane, count } = lanes([entry(1, '08:30', '10:00'), entry(2, '09:30', '10:30'), entry(3, '10:00', '11:00'), entry(4, '10:15', '10:20')])
+    const { lane, columns, count } = lanes([
+      entry(1, '08:30', '10:00'),
+      entry(2, '09:30', '10:30'),
+      entry(3, '10:00', '11:00'),
+      entry(4, '10:15', '10:20'),
+      entry(5, '14:00', '15:00'),
+    ])
     expect(count).toBe(3)
     expect(lane.get(1)).toBe(0)
     expect(lane.get(2)).toBe(1)
     expect(lane.get(3)).toBe(0)
     expect(lane.get(4)).toBe(2)
+    expect(columns.get(1)).toBe(3)
+    expect(lane.get(5)).toBe(0)
+    expect(columns.get(5)).toBe(1)
   })
 
   it('ne compte comme trous du jour que le temps déjà écoulé', () => {
