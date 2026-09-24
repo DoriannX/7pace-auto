@@ -12,7 +12,7 @@
   <ItemGroup>
     <!-- Le cœur métier reste interne ; seuls ses tests le voient. -->
     <InternalsVisibleTo Include="SeptPaceAuto.Tests" />
-    <!-- Le collecteur héberge le cœur : il voit ce que le terminal n'a pas à connaître. -->
+    <!-- Le collecteur héberge le cœur et voit donc ses types internes. -->
     <InternalsVisibleTo Include="SeptPaceAuto.Agent" />
   </ItemGroup>
 

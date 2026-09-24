@@ -1,9 +1,9 @@
 <Project>
 
   <!--
-    Le collecteur doit se trouver à côté de l'exécutable qui cherche à le lancer : le
-    terminal en développement, et les tests qui démarrent un vrai processus. La publication
-    n'en a pas besoin — build/publish.ps1 range les deux projets dans le même dossier.
+    Les tests qui démarrent un vrai processus cherchent le collecteur à côté de leur propre
+    exécutable. La publication n'en a pas besoin — build/publish.ps1 range les deux projets
+    dans le même dossier.
   -->
   <Target Name="CopierLeCollecteur" AfterTargets="Build" Condition="'$(SeptPaceSansCopieCollecteur)' != 'true'">
     <ItemGroup>

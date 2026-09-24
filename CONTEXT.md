@@ -2,7 +2,7 @@
 
 ## Collecteur
 
-Processus de fond, sans fenêtre, qui relève la branche Git, tient les journées et écrit sur le disque. L’app le lance à l’ouverture de session et il continue quel que soit son sort. Un seul collecteur existe par profil de données, et lui seul écrit.
+Processus de fond, sans fenêtre, qui relève la branche Git et le calendrier Outlook, tient les journées et écrit sur le disque. L’app le lance à l’ouverture de session et il continue quel que soit son sort. Un seul collecteur existe par profil de données, et lui seul écrit.
 
 ## App
 
@@ -59,6 +59,10 @@ Période des horaires de travail configurés que ne couvre aucun créneau. Un tr
 ## Chevauchement
 
 Période couverte par plusieurs créneaux. Un chevauchement est signalé mais reste envoyable, car il peut représenter plusieurs imputations simultanées volontaires.
+
+## Créneau occupé
+
+Période marquée « occupé » dans le calendrier Outlook publié par lien ICS, retenue dans les horaires de travail. Elle interrompt le suivi Git et devient un créneau imputé à #175 pour le standup de 09:15–09:30, à #83 sinon. Le flux ne dit pas si l’invitation a été acceptée.
 
 ## Lecture Git impossible
 

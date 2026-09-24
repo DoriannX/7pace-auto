@@ -19,7 +19,7 @@ aucune correction après envoi. Une journée envoyée appartient à 7pace.
 - Un chrono rapide facultatif ouvre un créneau « à attribuer », même pendant un ticket suivi.
 - Le widget montre en permanence le ticket suivi, son chrono et l’état de la collecte.
 - Le lendemain matin, la fenêtre s’ouvre d’elle-même sur la plus ancienne journée en attente.
-- Elle montre cette journée sur une frise horaire : créneaux, trous, chevauchements et total.
+- Elle montre cette journée en agenda vertical : créneaux, trous, chevauchements et total.
 - Après correction, l’envoi écrit un worklog par suite de créneaux contigus d’un même ticket, puis clôt la journée.
 
 Le suivi repose sur la branche Git active et, si son lien ICS est renseigné, sur les créneaux
@@ -33,22 +33,25 @@ Le vocabulaire du domaine : [CONTEXT.md](CONTEXT.md).
 ## Collecteur et app
 
 `SeptPaceAuto.Agent.exe` est le collecteur : il n’a ni fenêtre ni icône, il est seul à relever
-la branche et à écrire les journées. Il tourne tant que la session Windows est ouverte.
+la branche et le calendrier et à écrire les journées. Il tourne tant que la session Windows est
+ouverte.
 
 `SeptPaceAuto.App.exe` est l’interface. Elle ne collecte rien : elle interroge le collecteur
 par une liaison locale réservée au compte Windows, affiche ce qu’il sait et lui transmet les
 corrections. Elle lance le collecteur s’il ne tourne pas, et le relance s’il disparaît.
 
-Le widget tient en une ligne : une pastille verte quand le suivi tourne, ambre hors horaires,
-rouge en cas de panne ou de collecteur injoignable ; le ticket suivi ; le chrono du créneau en
-cours ; le bouton du chrono rapide. Il se déplace par sa poignée `⋮` et garde sa place. Un
-clic l’ouvre en fenêtre, un clic droit propose Ouvrir et Quitter.
+Le widget tient en une ligne : une pastille verte quand le suivi ou une réunion tourne, ambre
+hors horaires, rouge en cas de panne, de calendrier illisible ou de collecteur injoignable ; le
+ticket suivi ; le chrono du créneau en cours ; le bouton « Hors ticket » du chrono rapide. Il se
+déplace par sa poignée `⋮` et garde sa place. Un clic l’ouvre en fenêtre, un clic droit
+propose Ouvrir et Quitter.
 
-Dans la fenêtre, on glisse un créneau pour le déplacer et ses bords pour l’étirer, au pas de
-5 minutes ; glisser dans le vide crée un créneau, cliquer un trou le comble. Le créneau
-sélectionné se corrige sous la frise, avec les tickets de la journée proposés en un clic.
-« Envoyer » et « Ignorer » partent d’un appui maintenu d’une seconde. « Aujourd’hui » montre
-la journée en cours, en lecture seule. Fermer la fenêtre la replie en widget.
+Dans la fenêtre, la journée s’affiche en agenda vertical. On glisse un créneau pour le
+déplacer et ses bords pour l’étirer, au pas de 5 minutes ; glisser dans le vide crée un
+créneau, cliquer un trou le comble. Le panneau de droite donne le total, liste les créneaux
+sans ticket et corrige le créneau sélectionné, avec les tickets de la journée proposés en un
+clic. « Envoyer » et « Ignorer » partent d’un appui maintenu d’une seconde. « Aujourd’hui »
+montre la journée en cours, en lecture seule. Fermer la fenêtre la replie en widget.
 
 Arrêter réellement la collecte se fait dans les réglages (icône en haut à droite) : **Arrêter**,
 par appui maintenu. Le collecteur ferme alors ses créneaux, écrit son dernier relevé, puis
@@ -156,6 +159,16 @@ gérer les deux fenêtres.
 En `tauri dev`, l’app rejoint le collecteur du profil actif, ou lance celui compilé dans
 `src/SeptPaceAuto.Agent/bin/Debug`. `SEPTPACE_DATA` déplace le profil de données : tuyau,
 verrous et journées en suivent, ce qui isole un essai de l’installation réelle.
+
+`install.ps1 -DevFront .\app` fait afficher à l’app installée le front du dépôt, servi par
+Vite sur `http://127.0.0.1:1420` et rechargé à chaud. L’app lance Vite s’il ne tourne pas
+(sortie dans `%LOCALAPPDATA%\7pace-auto\vite.log`) et garde son front intégré s’il ne
+répond pas. `-NoDevFront` revient au front intégré. Une modification Rust ou .NET demande
+toujours `publish.ps1` puis `install.ps1`.
+
+Une nouvelle commande Tauri se déclare dans `generate_handler!` (`lib.rs`), dans `build.rs`,
+dans `capabilities/default.json` et dans `dev_front.rs` : sans les trois dernières, le front
+servi par Vite ne peut pas l’appeler.
 
 ## Licence
 

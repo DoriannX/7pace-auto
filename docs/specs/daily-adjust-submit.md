@@ -37,7 +37,8 @@ Un créneau utile à l’envoi porte :
 - une heure de début ;
 - une heure de fin ;
 - un numéro de work item nullable ;
-- une origine informative permettant au suivi Git de prolonger son propre créneau ;
+- une origine informative (Git, calendrier, chrono rapide, saisie) qui permet au collecteur de
+  prolonger ou de remplacer ses propres créneaux ;
 - un état d’envoi local temporaire pour éviter les doublons lors d’un échec partiel.
 
 Les catégories d’activité et les titres saisis disparaissent. Un libellé résolu depuis Azure
@@ -58,6 +59,8 @@ partent en un seul worklog ; séparés par un écart ou un chevauchement, ils re
   qui fait fermer au collecteur ses créneaux et son dernier relevé avant de sortir. L’app ne le
   relance plus alors que sur demande.
 - Elle surveille un seul dépôt Git et uniquement les horaires de travail configurés.
+- Si un lien ICS est renseigné, le calendrier est relu toutes les 5 minutes. Un flux illisible
+  depuis plus de 30 minutes passe le widget au rouge et laisse le suivi Git seul.
 - La branche active continue d’être comptée lorsque le poste reste allumé mais inactif.
 - Une interruption de collecte devient un créneau « À attribuer » plutôt qu’une supposition.
 - Un relevé Git raté n’est pas une interruption : la branche connue est conservée le temps de
@@ -84,23 +87,25 @@ suivi, et la fenêtre expose une consultation
 de la journée calendaire en cours, en lecture seule et disponible même lorsqu’une journée
 terminée attend déjà d’être traitée.
 
-Elle montre les créneaux réellement enregistrés aujourd’hui — heures, ticket résolu,
-libellé de relecture, origine — les intervalles encore à attribuer, et l’état du suivi :
-branche lue, créneau en cours, dernier relevé, dernière lecture de branche, dernière
-écriture et dernière erreur. Passé trois intervalles de relevé sans nouveau relevé, le
-suivi est annoncé figé. Une lecture Git impossible s’y distingue d’un dépôt absent : le
-relevé reste frais alors que la dernière lecture de branche vieillit. Seuls les trous déjà
-écoulés sont signalés : les horaires à venir n’en sont pas.
+Elle montre dans l’agenda les créneaux réellement enregistrés aujourd’hui — heures, ticket
+résolu, libellé de relecture — les créneaux encore à attribuer, l’heure courante, le total et
+l’état du suivi : ticket ou réunion en cours, hors horaires, lecture Git en échec ou dépôt
+introuvable. Seuls les trous déjà écoulés sont signalés : les horaires à venir n’en sont pas.
+
+Le collecteur expose aussi la santé détaillée du suivi : branche lue, créneau en cours,
+dernier relevé, dernière lecture de branche, dernière écriture et dernière erreur. Passé trois
+intervalles de relevé sans nouveau relevé, le widget annonce le suivi figé. Une lecture Git
+impossible se distingue d’un dépôt absent : le relevé reste frais alors que la dernière
+lecture de branche vieillit.
 
 Cette consultation ne corrige, ne supprime, n’ignore ni n’envoie quoi que ce soit, ne lit
 aucune donnée 7pace et n’écrit rien sur le disque pour se rafraîchir. Elle ne remplace pas
-la file du matin, qui garde la priorité, et rappelle simplement combien de journées y
-attendent.
+la file du matin, qui garde la priorité, et propose d’y revenir quand une journée attend.
 
 ### Ajustement
 
-La fenêtre affiche les créneaux sur une frise horaire, les chevauchements sur des voies
-distinctes. L’utilisateur peut :
+La fenêtre affiche la journée en agenda vertical, les chevauchements en colonnes côte à côte.
+L’utilisateur peut :
 
 - ajouter un créneau en glissant dans le vide, ou combler un trou d’un clic ;
 - déplacer un créneau ou étirer ses bords, aimantés à 5 minutes ;
@@ -113,9 +118,9 @@ l’envoi. Tout créneau « À attribuer » bloque l’envoi complet.
 
 ### Confirmation et envoi
 
-La frise montre déjà chaque créneau, son numéro, les chevauchements, les trous et le total
-imputable. L’envoi part d’un appui maintenu d’une seconde sur « Envoyer », sans autre
-boîte de dialogue ; un clic ne suffit pas.
+L’agenda montre déjà chaque créneau, son numéro, les chevauchements et les trous ; le panneau
+de droite donne le total imputable et les créneaux sans ticket. L’envoi part d’un appui
+maintenu d’une seconde sur « Envoyer », sans autre boîte de dialogue ; un clic ne suffit pas.
 
 Les worklogs sont envoyés séquentiellement. En cas d’échec partiel :
 
@@ -135,18 +140,21 @@ Après un envoi complet :
 L’interface est une app de bureau Tauri à deux fenêtres sans cadre, aux couleurs
 arachnid-dark du poste.
 
-Le widget est une ligne toujours au premier plan : pastille d’état (verte quand le suivi
-tourne, ambre hors horaires, rouge en cas de panne, de suivi figé ou de collecteur
-injoignable), ticket suivi, chrono du créneau en cours et bouton du chrono rapide
-« À attribuer ». Un clic ouvre la fenêtre ; un clic droit propose Ouvrir et Quitter.
+Le widget est une ligne toujours au premier plan : pastille d’état (verte quand le suivi ou
+une réunion tourne, ambre hors horaires, rouge en cas de panne, de suivi figé, de calendrier
+illisible ou de collecteur injoignable), ticket suivi, chrono du créneau en cours et bouton
+« Hors ticket » du chrono rapide. Un clic ouvre la fenêtre ; un clic droit propose Ouvrir et
+Quitter.
 
-La fenêtre contient uniquement la frise de la journée en attente, l’édition du créneau
-sélectionné, le total, Envoyer et Ignorer, et une bascule vers la journée en cours en lecture
+La fenêtre contient uniquement l’agenda de la journée en attente et, à droite, sa date, le
+nombre d’autres journées en attente, le total, les créneaux sans ticket ou l’édition du
+créneau sélectionné, Envoyer, Ignorer et une bascule vers la journée en cours en lecture
 seule. La fermer la replie en widget.
 
 Un seul panneau secondaire regroupe les réglages (dépôt, organisation Azure DevOps, compte et
-jeton 7pace, horaires), la mise à jour, l’arrêt ou la relance du collecteur et « Quitter
-l’app ». Il ne contient aucun catalogue d’activités : l’utilisateur saisit les numéros requis.
+jeton 7pace, lien ICS Outlook, horaires), la mise à jour, l’arrêt ou la relance du collecteur
+et « Quitter l’app ». Il ne contient aucun catalogue d’activités : l’utilisateur saisit les
+numéros requis.
 
 L’app n’écrit rien elle-même, et le collecteur sérialise les demandes qui modifient une
 journée. Un collecteur injoignable est annoncé tel quel ; l’interface ne laisse jamais croire
@@ -175,7 +183,7 @@ que le temps continue d’être compté.
 7. Les chevauchements sont autorisés et signalés.
 8. Les trous sont signalés mais n’interdisent pas l’envoi.
 9. Un numéro manquant ou un chrono rapide encore actif interdit l’envoi.
-10. L’envoi exige un appui maintenu ; la frise montre la liste exacte et le total avant.
+10. L’envoi exige un appui maintenu ; l’agenda montre la liste exacte et le total avant.
 11. Des créneaux du même numéro qui se suivent sans écart produisent un seul worklog.
 12. Après un échec partiel, seuls les créneaux acceptés sont verrouillés et exclus de la
     tentative suivante.
