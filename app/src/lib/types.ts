@@ -87,6 +87,7 @@ export interface LoadedSettings {
   settings: Settings
   connections: { sevenpace: Connection }
   configured: boolean
+  calendarConfigured: boolean
 }
 
 export interface Probe {

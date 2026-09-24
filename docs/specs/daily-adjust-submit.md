@@ -17,7 +17,7 @@ ouvre et quitte sans conséquence.
 
 - Le collecteur est seul à relever et à écrire. L’app ne fait qu’afficher
   et demander.
-- Le dépôt Git configuré indique le travail courant.
+- Le dépôt Git configuré indique le travail courant hors des créneaux occupés du calendrier Outlook publié.
 - Azure DevOps résout automatiquement le Bug ou PBI extrait de la branche vers son Fix ou sa
   Task. Cette lecture reste nécessaire pour éviter la ressaisie des tickets.
 - L’utilisateur peut démarrer et arrêter un créneau rapide « À attribuer ». Ce créneau
@@ -25,9 +25,10 @@ ouvre et quitte sans conséquence.
 - L’utilisateur corrige la journée terminée et attribue lui-même les numéros qui manquent.
 - 7pace reçoit les créneaux validés et devient alors l’unique source de vérité.
 
-Une réunion ou une autre activité non observable reste attribuée au ticket Git si
-l’utilisateur n’utilise pas le créneau rapide et ne la corrige pas le lendemain. Cette limite
-est assumée : l’application ne prétend pas deviner une activité sans source fiable.
+Les créneaux occupés du calendrier publié interrompent le suivi Git : le standup de 09:15 à
+09:30 reçoit #175, les autres #83. Le flux ICS ne permet pas de prouver que l’invitation a été
+acceptée ; les rendez-vous personnels marqués « occupé » sont inclus. Hors de cette source,
+une réunion reste attribuée au ticket Git si l’utilisateur ne la corrige pas le lendemain.
 
 ## Modèle minimal
 
@@ -43,8 +44,8 @@ Les catégories d’activité et les titres saisis disparaissent. Un libellé r�
 peut être affiché pour aider la relecture, mais il n’est ni demandé à l’utilisateur ni envoyé
 à 7pace.
 
-Deux créneaux peuvent se chevaucher. Chaque créneau produit son propre worklog : deux périodes
-portant le même numéro restent deux worklogs distincts.
+Deux créneaux peuvent se chevaucher. Des créneaux du même numéro qui se suivent sans écart
+partent en un seul worklog ; séparés par un écart ou un chevauchement, ils restent distincts.
 
 ## Cycle quotidien
 
@@ -160,7 +161,7 @@ que le temps continue d’être compté.
 - Afficher des rapports, statistiques ou tendances.
 - Corriger ou supprimer depuis l’application une journée déjà envoyée.
 - Maintenir un catalogue local des tâches génériques du wiki.
-- Détecter automatiquement les réunions ou l’inactivité du poste.
+- Détecter l’inactivité du poste ou lire la réponse aux invitations Outlook.
 - Surveiller plusieurs dépôts Git.
 
 ## Critères d’acceptation
@@ -175,7 +176,7 @@ que le temps continue d’être compté.
 8. Les trous sont signalés mais n’interdisent pas l’envoi.
 9. Un numéro manquant ou un chrono rapide encore actif interdit l’envoi.
 10. L’envoi exige un appui maintenu ; la frise montre la liste exacte et le total avant.
-11. Chaque créneau produit un worklog distinct, même si plusieurs portent le même numéro.
+11. Des créneaux du même numéro qui se suivent sans écart produisent un seul worklog.
 12. Après un échec partiel, seuls les créneaux acceptés sont verrouillés et exclus de la
     tentative suivante.
 13. Après succès complet, le détail local est supprimé et seul le marqueur de date close

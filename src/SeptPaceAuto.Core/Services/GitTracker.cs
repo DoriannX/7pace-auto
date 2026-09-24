@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -35,6 +36,7 @@ internal sealed class GitTracker : IAsyncDisposable
     private readonly IBranchReader _branches;
     private readonly Func<DateTime> _clock;
     private readonly ITrackerState _state;
+    private readonly ICalendarFeed _calendar;
     private readonly SemaphoreSlim _turn = new(1, 1);
 
     private CancellationTokenSource? _life;
@@ -60,6 +62,7 @@ internal sealed class GitTracker : IAsyncDisposable
     private int? _blockEnd;
     private string? _lastError;
     private DateTime? _lastErrorAt;
+    private string? _calendarError;
 
     // Chrono rapide en cours.
     private string? _quickDate;
@@ -67,6 +70,8 @@ internal sealed class GitTracker : IAsyncDisposable
     private int? _quickEntryId;
 
     private DateTime _lastTick;
+    private string? _resumeDate;
+    private int? _resumeAt;
     private Tracking _current = new(null, null, null, "Suivi en préparation", false, "outside-hours");
 
     /// <param name="profile">Réglages actifs, relus à chaque relevé : un changement s'applique sans redémarrage.</param>
@@ -90,7 +95,8 @@ internal sealed class GitTracker : IAsyncDisposable
         Func<Profile> profile,
         IBranchReader branches,
         Func<DateTime> clock,
-        ITrackerState state)
+        ITrackerState state,
+        ICalendarFeed? calendar = null)
     {
         _days = days;
         _resolver = resolver;
@@ -98,6 +104,7 @@ internal sealed class GitTracker : IAsyncDisposable
         _branches = branches;
         _clock = clock;
         _state = state;
+        _calendar = calendar ?? new EmptyCalendarFeed();
     }
 
     /// <summary>Dernier état connu du suivi.</summary>
@@ -273,8 +280,8 @@ internal sealed class GitTracker : IAsyncDisposable
         {
             await ObserveAsync(ct).ConfigureAwait(false);
             _observedAt = _clock();
-            _lastError = null;
-            _lastErrorAt = null;
+            _lastError = _calendarError;
+            _lastErrorAt = _calendarError is null ? null : _clock();
         }
         catch (OperationCanceledException)
         {
@@ -313,12 +320,47 @@ internal sealed class GitTracker : IAsyncDisposable
         }
 
         var minute = TimeRules.MinuteOfDay(now);
+        var date = TimeRules.DateKey(now);
+        var calendar = await _calendar.ReadDayAsync(now, ct).ConfigureAwait(false);
+        _calendarError = calendar.Error;
+        CalendarSlot? meeting = null;
+        int? resumedGitId = null;
+        if (calendar.Valid)
+        {
+            meeting = calendar.Slots.FirstOrDefault(slot => slot.Start <= minute && minute < slot.End);
+            var firstOverlap = _blockWindow is null || _blockDate != date
+                ? null
+                : calendar.Slots.FirstOrDefault(slot => slot.Start < minute && slot.End > _blockStart);
+            if (firstOverlap is not null)
+            {
+                var previousGitId = _blockEntryId;
+                WriteBlock(Math.Min(firstOverlap.Start, minute));
+                CloseBlock();
+                _resumeDate = date;
+                _resumeAt = calendar.Slots.Where(slot => slot.Start < minute && slot.End > firstOverlap.Start)
+                    .Max(slot => slot.End);
+                resumedGitId = _days.ApplyCalendar(date, calendar.Slots, minute, previousGitId);
+            }
+            else
+            {
+                _blockEntryId = _days.ApplyCalendar(date, calendar.Slots, minute, _blockEntryId);
+            }
+        }
+
         var window = _profile().Schedule.WindowAt(minute);
         if (window is null)
         {
             if (_blockWindow is { } closing) WriteBlock(closing.End);
             CloseBlock();
             Publish("outside-hours");
+            return;
+        }
+
+        if (meeting is not null)
+        {
+            _resumeDate = date;
+            _resumeAt = meeting.End;
+            PublishMeeting(meeting);
             return;
         }
 
@@ -341,7 +383,6 @@ internal sealed class GitTracker : IAsyncDisposable
         // Seule une lecture aboutie horodate le dépôt : au-delà, il ne répond plus.
         _branchAt = now;
 
-        var date = TimeRules.DateKey(now);
         var sameBlock = string.Equals(_branch, branch, StringComparison.Ordinal)
             && string.Equals(_blockDate, date, StringComparison.Ordinal)
             && _blockWindow is { } current && current.End == window.Value.End;
@@ -358,15 +399,20 @@ internal sealed class GitTracker : IAsyncDisposable
             CloseBlock();
             // Une attribution déjà obtenue pour cette branche est conservée : rouvrir un bloc
             // après une coupure ne doit pas refaire un créneau « à attribuer » sans raison.
-            if (!string.Equals(_branch, branch, StringComparison.Ordinal))
+            var sameBranch = string.Equals(_branch, branch, StringComparison.Ordinal);
+            if (!sameBranch)
             {
                 _resolution = new Resolution(WorkItemResolver.ExtractBug(branch), null, null, false, null);
             }
             _branch = branch;
             _blockDate = date;
             _blockWindow = window;
-            _blockStart = Math.Max(window.Value.Start, minute);
-            _blockEntryId = null;
+            _blockStart = _resumeDate == date && _resumeAt is int resume && resume <= minute
+                ? Math.Max(window.Value.Start, resume)
+                : Math.Max(window.Value.Start, minute);
+            _blockEntryId = sameBranch ? resumedGitId : null;
+            _resumeDate = null;
+            _resumeAt = null;
         }
 
         // Le relevé ne doit jamais attendre az : le cache répond tout de suite, et une
@@ -378,7 +424,19 @@ internal sealed class GitTracker : IAsyncDisposable
         }
 
         WriteBlock(minute);
+        if (calendar.Valid) _blockEntryId = _days.ApplyCalendar(date, calendar.Slots, minute, _blockEntryId);
         Publish("running");
+    }
+
+    private void PublishMeeting(CalendarSlot meeting)
+    {
+        _current = new Tracking(
+            _branch,
+            null,
+            meeting.WorkItem,
+            meeting.WorkItem == 175 ? "Standup" : "Réunion diverse",
+            _quickDate is not null,
+            "meeting");
     }
 
     /// <summary>

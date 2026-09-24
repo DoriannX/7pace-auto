@@ -37,6 +37,9 @@ internal static class AppPaths
     /// <summary>Jeton 7pace protégé par DPAPI, écrit depuis les réglages de l'application.</summary>
     public static string SevenPaceToken => Path.Combine(Root, "token.bin");
 
+    /// <summary>Lien de publication ICS Outlook protégé par DPAPI.</summary>
+    public static string CalendarLink => Path.Combine(Root, "calendar.bin");
+
     /// <summary>
     /// Ancien emplacement du jeton, alimenté par un script PowerShell externe. Il reste lu
     /// tant qu'il existe, pour ne pas perdre l'authentification d'une installation antérieure.

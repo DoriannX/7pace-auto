@@ -6,6 +6,7 @@ import type { DayReview, Entry, Settings } from '../types'
 import { dateKey, minuteOfDay, toMinutes, toTime } from '../time'
 
 let settings: Settings = structuredClone(settingsSeed)
+let calendarConfigured = false
 let pending: Entry[] = structuredClone(pendingSeed.entries)
 let pendingCount = pendingSeed.pending
 let quickStart: number | null = null
@@ -126,12 +127,17 @@ const handlers: Record<string, (params: Record<string, unknown>) => unknown> = {
     pending = structuredClone(pendingSeed.entries)
     return { message: 'Journée ignorée : rien n’a été envoyé dans 7pace.', pending: pendingCount }
   },
-  loadSettings: () => ({ settings, connections: { sevenpace: { status: 'ready', label: '7pace · authentifié, droits d’écriture non prouvés' } }, configured: true }),
+  loadSettings: () => ({ settings, connections: { sevenpace: { status: 'ready', label: '7pace · authentifié, droits d’écriture non prouvés' } }, configured: true, calendarConfigured }),
   saveSettings: (params) => {
     settings = params.settings as Settings
     return handlers.loadSettings(params)
   },
   saveToken: () => ({ connections: { sevenpace: { status: 'ready', label: '7pace · authentifié' } } }),
+  saveCalendarLink: (params) => {
+    calendarConfigured = Boolean(params.link)
+    return { calendarConfigured }
+  },
+  probeCalendar: () => ({ ok: true, message: 'Calendrier accessible : 2 créneaux occupés aujourd’hui.' }),
   probeRepo: () => ({ ok: true, branch: 'feature/48400-export-pdf', ticket: 48400, message: 'Dépôt lu : branche feature/48400-export-pdf.' }),
   probeAzure: () => ({ ok: true, message: 'Organisation joignable.' }),
   probeToken: () => ({ ok: true, message: 'Jeton accepté.' }),

@@ -11,15 +11,16 @@
   }
   let { onclose, onsaved }: Props = $props()
 
-  type ProbeKey = 'repo' | 'azure' | 'token'
+  type ProbeKey = 'repo' | 'azure' | 'token' | 'calendar'
 
   let loaded = $state<LoadedSettings | null>(null)
   let repoPath = $state('')
   let organization = $state('')
   let account = $state('')
   let token = $state('')
+  let calendarLink = $state('')
   let spans = $state<{ start: string; end: string }[]>([])
-  let probes = $state<Record<ProbeKey, Probe | 'pending' | null>>({ repo: null, azure: null, token: null })
+  let probes = $state<Record<ProbeKey, Probe | 'pending' | null>>({ repo: null, azure: null, token: null, calendar: null })
   let update = $state<UpdateInfo | 'pending' | null>(null)
   let note = $state<{ text: string; ok: boolean } | null>(null)
   let busy = $state(false)
@@ -39,6 +40,7 @@
     repoPath = result.settings.repoPath
     organization = result.settings.azureOrganization
     account = result.settings.sevenPaceAccount
+    calendarLink = ''
     spans = result.settings.workWindows.map(([start, end]) => ({ start: toTime(start), end: toTime(end) }))
   }
 
@@ -50,7 +52,9 @@
     probes[key] = 'pending'
     try {
       probes[key] =
-        key === 'repo'
+        key === 'calendar'
+          ? await call<Probe>('probeCalendar', { link: calendarLink.trim() })
+          : key === 'repo'
           ? await call<Probe>('probeRepo', { path: repoPath })
           : key === 'azure'
             ? await call<Probe>('probeAzure', { organization })
@@ -75,12 +79,31 @@
         await call('saveToken', { token: token.trim() })
         token = ''
       }
+      if (calendarLink.trim()) {
+        await call('saveCalendarLink', { link: calendarLink.trim() })
+        calendarLink = ''
+      }
       const saved = await call<LoadedSettings>('saveSettings', {
         settings: { ...loaded.settings, repoPath, azureOrganization: organization, sevenPaceAccount: account, workWindows },
       })
       apply(saved)
       onsaved(saved.settings)
       note = { text: 'Réglages enregistrés.', ok: true }
+    } catch (failure) {
+      fail(failure)
+    } finally {
+      busy = false
+    }
+  }
+
+  async function removeCalendar() {
+    busy = true
+    try {
+      const result = await call<{ calendarConfigured: boolean }>('saveCalendarLink', { link: '' })
+      if (loaded) loaded = { ...loaded, calendarConfigured: result.calendarConfigured }
+      calendarLink = ''
+      probes.calendar = null
+      note = { text: 'Lien calendrier retiré.', ok: true }
     } catch (failure) {
       fail(failure)
     } finally {
@@ -170,6 +193,16 @@
       <button onclick={() => probe('token')}>Vérifier</button>
     </div>
     {@render verdict(probes.token)}
+
+    <div class="row">
+      <label for="calendar">Lien ICS Outlook</label>
+      <input id="calendar" type="password" bind:value={calendarLink} placeholder={loaded?.calendarConfigured ? 'lien enregistré' : 'https://…/calendar.ics'} spellcheck="false" />
+      <button onclick={() => probe('calendar')}>Vérifier</button>
+    </div>
+    {@render verdict(probes.calendar)}
+    {#if loaded?.calendarConfigured}
+      <div class="calendar-remove"><button class="ghost" onclick={removeCalendar} disabled={busy}>Retirer le lien</button></div>
+    {/if}
 
     <div class="row">
       <span class="label">Horaires</span>
@@ -294,6 +327,10 @@
   .verdict {
     margin: 2px 0 0 160px;
     font-size: 12px;
+  }
+
+  .calendar-remove {
+    margin-left: 160px;
   }
 
   .actions {

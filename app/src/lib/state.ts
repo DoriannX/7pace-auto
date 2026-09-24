@@ -6,6 +6,7 @@ const TRACKING_LABELS: Record<string, string> = {
   'outside-hours': 'hors horaires',
   'git-unreadable': 'lecture Git en échec',
   'no-repo': 'dépôt introuvable',
+  meeting: 'réunion',
 }
 
 export function trackingLabel(state: string): string {
@@ -47,6 +48,10 @@ export function chronoMinutes(day: CurrentDay, now: Date): number | null {
       .sort((left, right) => toMinutes(right.start) - toMinutes(left.start))[0]
     return quick ? Math.max(0, minute - toMinutes(quick.start)) : null
   }
+  if (day.tracking.state === 'meeting') {
+    const meeting = day.entries.find((entry) => entry.source === 'calendar' && toMinutes(entry.start) <= minute && toMinutes(entry.end) >= minute)
+    return meeting ? Math.max(0, minute - toMinutes(meeting.start)) : null
+  }
   const { spanStart, spanDate } = day.health
   if (spanStart == null || spanDate !== day.date) return null
   return Math.max(0, minute - spanStart)
@@ -74,11 +79,16 @@ export function widgetStatus(day: CurrentDay | null, lastOk: number | null, now:
   if (health.observedAt && now.getTime() - Date.parse(health.observedAt) > health.staleAfterSeconds * 1000) {
     return { tone: 'alert', text: 'Suivi figé : aucun relevé récent', chrono: null }
   }
+  if (health.error?.startsWith('Calendrier Outlook')) {
+    return { tone: 'alert', text: health.error, chrono: null }
+  }
   if (tracking.quickRunning) {
     return { tone: 'ok', text: 'Hors ticket · à attribuer demain', chrono: chronoMinutes(day, now) }
   }
   switch (tracking.state) {
     case 'running':
+      return { tone: 'ok', text: ticket(tracking.workItem, tracking.label), chrono: chronoMinutes(day, now) }
+    case 'meeting':
       return { tone: 'ok', text: ticket(tracking.workItem, tracking.label), chrono: chronoMinutes(day, now) }
     case 'outside-hours':
       return { tone: 'idle', text: 'Hors horaires', chrono: null }

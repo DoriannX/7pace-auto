@@ -14,15 +14,16 @@ aucune correction après envoi. Une journée envoyée appartient à 7pace.
 
 ## Fonctionnement
 
-- Le collecteur relève la branche du dépôt surveillé pendant les horaires configurés.
+- Le collecteur relève la branche du dépôt surveillé pendant les horaires configurés ; les créneaux occupés du calendrier Outlook publié prennent sa place.
 - Rapproche le Bug ou PBI trouvé dans la branche de son Fix ou de sa Task via `az boards`.
 - Un chrono rapide facultatif ouvre un créneau « à attribuer », même pendant un ticket suivi.
 - Le widget montre en permanence le ticket suivi, son chrono et l’état de la collecte.
 - Le lendemain matin, la fenêtre s’ouvre d’elle-même sur la plus ancienne journée en attente.
 - Elle montre cette journée sur une frise horaire : créneaux, trous, chevauchements et total.
-- Après correction, l’envoi écrit un worklog par créneau puis clôt la journée.
+- Après correction, l’envoi écrit un worklog par suite de créneaux contigus d’un même ticket, puis clôt la journée.
 
-Le suivi repose uniquement sur la branche Git active. Aucune application, frappe, navigation
+Le suivi repose sur la branche Git active et, si son lien ICS est renseigné, sur les créneaux
+occupés du calendrier Outlook. Aucune application, frappe, navigation
 ou période d’inactivité n’est observée. Les journées en attente restent dans
 `%LOCALAPPDATA%\7pace-auto\days` ; une journée envoyée n’y laisse que sa date.
 
@@ -100,10 +101,15 @@ Au premier lancement, ouvrez les réglages et renseignez :
 | Compte 7pace | sous-domaine `https://<compte>.timehub.7pace.com` |
 | Jeton 7pace | chiffré par DPAPI pour le compte Windows, il ne quitte jamais la machine |
 | Horaires | périodes pendant lesquelles le temps est compté |
+| Lien ICS Outlook | calendrier publié en mode « Peut voir lorsque je suis occupé(e) » ; conservé chiffré sur ce poste |
 
-Chaque champ se vérifie sur place. Aucun catalogue d’activités n’est tenu par l’application :
-les numéros des tâches génériques (réunion, aide, formation…) se saisissent au moment
-d’attribuer le créneau.
+Chaque champ se vérifie sur place. Les créneaux occupés remplacent le suivi Git dans les
+horaires de travail : 09:15–09:30 est imputé à #175 (standup), les autres à #83. Les états
+« tentative », « libre », les annulations et les journées entières sont ignorés lorsqu’ils
+sont indiqués dans le flux. Le lien ICS ne donne pas la réponse d’invitation : un rendez-vous
+personnel marqué « occupé » peut aussi être compté. La publication Outlook peut arriver avec
+retard ; la journée en cours est corrigée lors de la prochaine lecture du flux. Les autres
+numéros de tâches génériques se saisissent lors de la relecture.
 
 ## Vérifier que la collecte tourne
 

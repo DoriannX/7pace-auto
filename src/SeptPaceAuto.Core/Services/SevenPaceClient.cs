@@ -24,8 +24,8 @@ public sealed record SubmitOutcome(bool Ok, IReadOnlyList<SentEntry> Sent, strin
 
 /// <summary>
 /// Écritures vers 7pace. L'application n'y lit jamais rien : une journée envoyée appartient
-/// à 7pace, qui devient sa seule source de vérité. Un worklog est écrit par créneau, ce qui
-/// préserve le découpage horaire validé, chevauchements compris.
+/// à 7pace, qui devient sa seule source de vérité. Les créneaux d'un même élément de travail
+/// qui se touchent partent en un seul worklog ; le reste du découpage horaire est préservé.
 /// </summary>
 public sealed class SevenPaceClient
 {
@@ -97,22 +97,25 @@ public sealed class SevenPaceClient
         var failures = new List<string>();
         var day0 = TimeRules.ParseDate(date);
 
-        // Un worklog par créneau : le regroupement par élément de travail écraserait le
-        // découpage horaire validé, et rendrait les imputations simultanées illisibles.
-        foreach (var entry in pending)
+        foreach (var run in Contiguous(pending))
         {
-            var seconds = (entry.EndMinutes - entry.StartMinutes) * 60;
-            if (seconds <= 0) continue;
+            var first = run[0];
+            var last = run[^1];
+            var workItem = first.WorkItem!.Value;
+            var seconds = (last.EndMinutes - first.StartMinutes) * 60;
 
-            var timestamp = Stamp(day0.AddMinutes(entry.StartMinutes));
-            var failure = await PostAsync(endpoint, token, timestamp, seconds, entry.WorkItem!.Value, ct).ConfigureAwait(false);
+            var timestamp = Stamp(day0.AddMinutes(first.StartMinutes));
+            var failure = await PostAsync(endpoint, token, timestamp, seconds, workItem, ct).ConfigureAwait(false);
             if (failure is null)
             {
-                sent.Add(new SentEntry(entry.Id!.Value, entry.WorkItem!.Value, seconds));
+                foreach (var entry in run)
+                {
+                    sent.Add(new SentEntry(entry.Id!.Value, workItem, (entry.EndMinutes - entry.StartMinutes) * 60));
+                }
             }
             else
             {
-                failures.Add($"{entry.Start}–{entry.End} ({failure})");
+                failures.Add($"{first.Start}–{last.End} ({failure})");
             }
         }
 
@@ -128,6 +131,33 @@ public sealed class SevenPaceClient
             ? $"7pace a refusé l’envoi du {readable} : {detail}. Aucun temps n’a été marqué comme envoyé — les droits d’écriture ne sont pas prouvés."
             : $"Envoi partiel du {readable} : {sent.Count} créneau(x) acceptés, refus sur {detail}. Les créneaux refusés restent modifiables et repartiront seuls.";
         return new SubmitOutcome(false, sent, message);
+    }
+
+    /// <summary>
+    /// Suites de créneaux du même élément de travail où chacun commence à la fin du
+    /// précédent : une suite devient un seul worklog. Un chevauchement ou un écart, même
+    /// d'une minute, garde des worklogs distincts pour ne rien fausser.
+    /// </summary>
+    private static List<List<Entry>> Contiguous(IEnumerable<Entry> ordered)
+    {
+        var runs = new List<List<Entry>>();
+        var open = new Dictionary<(int WorkItem, int End), List<Entry>>();
+        foreach (var entry in ordered)
+        {
+            if (entry.EndMinutes <= entry.StartMinutes) continue;
+            var workItem = entry.WorkItem!.Value;
+            if (open.Remove((workItem, entry.StartMinutes), out var run))
+            {
+                run.Add(entry);
+            }
+            else
+            {
+                run = new List<Entry> { entry };
+                runs.Add(run);
+            }
+            open[(workItem, entry.EndMinutes)] = run;
+        }
+        return runs;
     }
 
     /// <summary>Null = 7pace a accepté l'écriture.</summary>

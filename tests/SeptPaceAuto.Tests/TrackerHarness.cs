@@ -40,6 +40,17 @@ internal sealed class ScriptedBranchReader : IBranchReader
     }
 }
 
+internal sealed class ScriptedCalendarFeed : ICalendarFeed
+{
+    public IReadOnlyList<CalendarSlot> Slots { get; set; } = Array.Empty<CalendarSlot>();
+    public bool Valid { get; set; } = true;
+
+    public Task<CalendarSnapshot> ReadDayAsync(DateTime now, CancellationToken ct) =>
+        Task.FromResult(new CalendarSnapshot(Valid, Slots));
+
+    public void Invalidate() { }
+}
+
 /// <summary>
 /// Résolveur muet : il répond toujours depuis « son cache », donc aucune tâche de fond
 /// n'est lancée et le relevé reste déterministe.
@@ -64,7 +75,7 @@ internal sealed class TrackerHarness : IDisposable
 {
     private readonly string _folder;
 
-    public TrackerHarness(int pollSeconds = 30, DateTime? day = null)
+    public TrackerHarness(int pollSeconds = 30, DateTime? day = null, ICalendarFeed? calendar = null)
     {
         Day = day ?? new DateTime(2026, 3, 17); // un mardi : le comblement ignore les week-ends.
         _folder = Path.Combine(Path.GetTempPath(), "7pace-auto-tests", Guid.NewGuid().ToString("N"));
@@ -74,7 +85,7 @@ internal sealed class TrackerHarness : IDisposable
             new AppSettings { RepoPath = @"C:\depot", PollSeconds = pollSeconds },
             strict: false);
         Days = new DayStore(() => Active, _folder);
-        Tracker = new GitTracker(Days, new SilentResolver(), () => Active, Branches, () => Now, State);
+        Tracker = new GitTracker(Days, new SilentResolver(), () => Active, Branches, () => Now, State, calendar);
     }
 
     /// <summary>Journée observée ; les horaires par défaut sont 8 h 30 – 12 h 30 et 13 h 30 – 17 h.</summary>

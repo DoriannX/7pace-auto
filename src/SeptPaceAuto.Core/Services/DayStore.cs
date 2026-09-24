@@ -277,6 +277,121 @@ public sealed class DayStore
         return written.Clone();
     }
 
+    /// <summary>
+    /// Remplace dans la journée en cours les minutes Git (ou d'intervalle inconnu) couvertes
+    /// par le calendrier. La tranche future n'est jamais écrite avant d'avoir été vécue.
+    /// Retourne le segment Git actif après une éventuelle découpe.
+    /// </summary>
+    internal int? ApplyCalendar(string date, IReadOnlyList<CalendarSlot> slots, int upTo, int? activeGitId)
+    {
+        TimeRules.ParseDate(date);
+        if (IsClosed(date)) return activeGitId;
+        var wanted = new List<CalendarSlot>();
+        foreach (var slot in slots)
+        {
+            foreach (var window in _profile().Schedule.Windows)
+            {
+                var start = Math.Max(slot.Start, window.Start);
+                var end = Math.Min(Math.Min(slot.End, window.End), upTo);
+                if (end > start) wanted.Add(new CalendarSlot(start, end, slot.WorkItem));
+            }
+        }
+
+        lock (_gate)
+        {
+            var day = DayList(date, create: wanted.Count > 0);
+            if (day is null) return activeGitId;
+            var changed = false;
+
+            // La journée courante est en lecture seule : ces entrées n'ont pas encore été
+            // corrigées par l'utilisateur. Une annulation dans Outlook les retire.
+            foreach (var entry in day.Where(item => item.Source == "calendar" && item.SentAt is null).ToArray())
+            {
+                var index = wanted.FindIndex(slot => slot.Start == entry.StartMinutes && slot.WorkItem == entry.WorkItem);
+                if (index < 0)
+                {
+                    day.Remove(entry);
+                    changed = true;
+                    continue;
+                }
+                var desired = wanted[index];
+                wanted.RemoveAt(index);
+                if (entry.EndMinutes == desired.End) continue;
+                entry.End = TimeRules.AsTime(desired.End);
+                changed = true;
+            }
+
+            var coverage = slots
+                .SelectMany(slot => _profile().Schedule.Windows.Select(window =>
+                    (Start: Math.Max(slot.Start, window.Start), End: Math.Min(Math.Min(slot.End, window.End), upTo))))
+                .Where(span => span.End > span.Start)
+                .OrderBy(span => span.Start)
+                .ToArray();
+
+            foreach (var entry in day.Where(item => item.Source is "git" or "gap" && item.SentAt is null).ToArray())
+            {
+                var wasActive = entry.Id == activeGitId;
+                var previousEnd = entry.EndMinutes;
+                var pieces = new List<(int Start, int End)> { (entry.StartMinutes, entry.EndMinutes) };
+                foreach (var span in coverage)
+                {
+                    var next = new List<(int Start, int End)>();
+                    foreach (var piece in pieces)
+                    {
+                        if (span.End <= piece.Start || span.Start >= piece.End) { next.Add(piece); continue; }
+                        if (piece.Start < span.Start) next.Add((piece.Start, span.Start));
+                        if (span.End < piece.End) next.Add((span.End, piece.End));
+                    }
+                    pieces = next;
+                    if (pieces.Count == 0) break;
+                }
+                if (pieces.Count == 1 && pieces[0] == (entry.StartMinutes, entry.EndMinutes)) continue;
+                changed = true;
+                if (pieces.Count == 0)
+                {
+                    day.Remove(entry);
+                    if (wasActive) activeGitId = null;
+                    continue;
+                }
+
+                for (var index = 0; index < pieces.Count; index++)
+                {
+                    var piece = pieces[index];
+                    var target = index == 0 ? entry : entry.Clone();
+                    if (index > 0)
+                    {
+                        target.Id = NextId(day);
+                        day.Add(target);
+                    }
+                    target.Start = TimeRules.AsTime(piece.Start);
+                    target.End = TimeRules.AsTime(piece.End);
+                    if (wasActive && piece.End == previousEnd) activeGitId = target.Id;
+                }
+                if (wasActive && pieces[^1].End != previousEnd) activeGitId = null;
+            }
+
+            foreach (var slot in wanted)
+            {
+                day.Add(new Entry
+                {
+                    Id = NextId(day),
+                    Start = TimeRules.AsTime(slot.Start),
+                    End = TimeRules.AsTime(slot.End),
+                    WorkItem = slot.WorkItem,
+                    Label = slot.WorkItem == 175 ? "Standup" : "Réunion diverse",
+                    Source = "calendar",
+                });
+                changed = true;
+            }
+            if (changed)
+            {
+                Sort(day);
+                Persist(TimeRules.MonthKey(date));
+            }
+            return activeGitId;
+        }
+    }
+
     // ---------- relecture de la journée ----------
 
     /// <summary>Périodes de travail prévues que ne couvre aucun créneau.</summary>

@@ -26,6 +26,7 @@ internal sealed class TrackingApp : ITrackingApp
     private readonly DayStore _days;
     private readonly WorkItemResolver _resolver;
     private readonly GitTracker _tracker;
+    private readonly OutlookCalendarFeed _calendar;
     private readonly SevenPaceClient _sevenPace;
     private readonly IUpdateService _updates;
 
@@ -47,7 +48,8 @@ internal sealed class TrackingApp : ITrackingApp
 
         _days = new DayStore(() => _profile);
         _resolver = new WorkItemResolver(() => _profile.Settings.AzureOrganization);
-        _tracker = new GitTracker(_days, _resolver, () => _profile, now);
+        _calendar = new OutlookCalendarFeed(CalendarLinkStore.Read);
+        _tracker = new GitTracker(_days, _resolver, () => _profile, new GitBranchReader(), now, new FileTrackerState(), _calendar);
         _sevenPace = new SevenPaceClient(_sevenPaceHttp, () => _profile.SevenPaceEndpoint);
         _updates = UpdateServiceFactory.Create(AppVersion.Current);
     }
@@ -126,6 +128,7 @@ internal sealed class TrackingApp : ITrackingApp
                     settings = profile.Settings,
                     connections = Connections(),
                     configured = profile.Configured,
+                    calendarConfigured = CalendarLinkStore.Configured,
                 });
             }
 
@@ -141,6 +144,18 @@ internal sealed class TrackingApp : ITrackingApp
                 TokenStore.Save(token.GetString());
                 return Write(new { connections = Connections() });
             }
+
+            case "saveCalendarLink":
+            {
+                var link = Optional(parameters, "link");
+                CalendarLinkStore.Save(link);
+                _calendar.Invalidate();
+                var tracking = await _tracker.ReconfigureAsync(ct).ConfigureAwait(false);
+                return Write(new { calendarConfigured = CalendarLinkStore.Configured, tracking });
+            }
+
+            case "probeCalendar":
+                return Write(await CalendarProbeAsync(Optional(parameters, "link"), ct).ConfigureAwait(false));
 
             case "checkUpdate":
                 return Write(Update(await CheckUpdateAsync(ct).ConfigureAwait(false)));
@@ -319,8 +334,27 @@ internal sealed class TrackingApp : ITrackingApp
             settings = saved.Settings,
             connections = Connections(),
             configured = saved.Configured,
+            calendarConfigured = CalendarLinkStore.Configured,
             tracking,
         });
+    }
+
+    private async Task<ServiceProbe> CalendarProbeAsync(string link, CancellationToken ct)
+    {
+        var value = string.IsNullOrWhiteSpace(link) ? CalendarLinkStore.Read() : link.Trim();
+        if (string.IsNullOrWhiteSpace(value)) return new ServiceProbe(false, "Colle le lien ICS publié par Outlook.");
+        if (!CalendarLinkStore.ValidUrl(value)) return new ServiceProbe(false, "Colle le lien ICS publié par Outlook.");
+        using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(8) };
+        try
+        {
+            var ics = await OutlookCalendarFeed.DownloadAsync(http, value, ct).ConfigureAwait(false);
+            var slots = CalendarSlots.Parse(ics, DateOnly.FromDateTime(_now()), TimeZoneInfo.Local);
+            return new ServiceProbe(true, $"Calendrier accessible : {slots.Count} créneau{(slots.Count > 1 ? "x" : string.Empty)} occupé{(slots.Count > 1 ? "s" : string.Empty)} aujourd’hui.");
+        }
+        catch (Exception error) when (error is HttpRequestException or TaskCanceledException or DomainException or FormatException or ArgumentException or InvalidOperationException)
+        {
+            return new ServiceProbe(false, "Lecture du calendrier impossible : vérifie le lien ICS Outlook.");
+        }
     }
 
     private object Connections() => new { sevenpace = _sevenPace.State() };
@@ -494,6 +528,7 @@ internal sealed class TrackingApp : ITrackingApp
     {
         _life?.Cancel();
         await _tracker.DisposeAsync().ConfigureAwait(false);
+        _calendar.Dispose();
         _life?.Dispose();
         _sevenPaceHttp.Dispose();
     }
