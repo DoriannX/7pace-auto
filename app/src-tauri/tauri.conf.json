@@ -6,7 +6,7 @@
   "identifier": "com.doriannx.septpaceauto",
   "build": {
     "beforeDevCommand": "vite",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "vite build",
     "frontendDist": "../dist"
   },

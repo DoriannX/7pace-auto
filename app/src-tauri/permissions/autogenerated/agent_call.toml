@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-agent-call"
+description = "Enables the agent_call command without any pre-configured scope."
+commands.allow = ["agent_call"]
+
+[[permission]]
+identifier = "deny-agent-call"
+description = "Denies the agent_call command without any pre-configured scope."
+commands.deny = ["agent_call"]

@@ -19,6 +19,10 @@
 .EXAMPLE
     .\build\install.ps1 -Zip .\artifacts\SeptPaceAuto-win-x64.zip -Startup
     Installe depuis une archive et ouvre le widget à chaque ouverture de session.
+
+.EXAMPLE
+    .\build\install.ps1 -Startup -DevFront .\app
+    L'app installée affiche le front du dépôt, servi par Vite et rechargé à chaud.
 #>
 [CmdletBinding()]
 param(
@@ -29,7 +33,13 @@ param(
     [string] $Source,
 
     # Ouvre l'app en widget à chaque ouverture de session ; elle lance le collecteur.
-    [switch] $Startup
+    [switch] $Startup,
+
+    # Dossier app du dépôt : l'app installée affiche son front servi par Vite (dev-front.json).
+    [string] $DevFront,
+
+    # Retire dev-front.json : l'app revient au front qu'elle embarque.
+    [switch] $NoDevFront
 )
 
 $ErrorActionPreference = 'Stop'
@@ -144,6 +154,21 @@ $racine = Split-Path -Parent $PSScriptRoot
 $temporaire = $null
 
 try {
+    # --- Front de développement ----------------------------------------------
+    $donnees = if ([string]::IsNullOrWhiteSpace($env:SEPTPACE_DATA)) {
+        Join-Path $env:LOCALAPPDATA '7pace-auto'
+    } else {
+        [System.IO.Path]::GetFullPath($env:SEPTPACE_DATA)
+    }
+    $fichierFront = Join-Path $donnees 'dev-front.json'
+    $dossierFront = $null
+    if (-not [string]::IsNullOrWhiteSpace($DevFront)) {
+        $dossierFront = Resolve-Chemin $DevFront
+        if (-not (Test-Path -LiteralPath (Join-Path $dossierFront 'package.json'))) {
+            throw "-DevFront doit désigner le dossier app du dépôt (package.json absent de $dossierFront)."
+        }
+    }
+
     # --- Origine des fichiers ------------------------------------------------
     if (-not [string]::IsNullOrWhiteSpace($Zip)) {
         $Zip = Resolve-Chemin $Zip
@@ -228,6 +253,15 @@ try {
         # collecteur seul) passe à l'app en widget.
         New-Raccourci -Chemin $demarrage -Cible $executable -Description 'Widget de suivi du temps' -Arguments '--widget'
         Write-Info "Démarrage automatique : $demarrage"
+    }
+
+    if ($NoDevFront) {
+        Remove-Item -LiteralPath $fichierFront -Force -ErrorAction SilentlyContinue
+        Write-Info 'Front : celui de l''app installée.'
+    } elseif ($dossierFront) {
+        New-Item -ItemType Directory -Path $donnees -Force | Out-Null
+        Set-Content -LiteralPath $fichierFront -Value (@{ app = $dossierFront } | ConvertTo-Json) -Encoding UTF8
+        Write-Info "Front : servi par Vite depuis $dossierFront"
     }
 
     # --- Entrée de désinstallation (utilisateur courant) ---------------------

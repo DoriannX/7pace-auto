@@ -10,7 +10,8 @@ export default defineConfig({
   plugins: [svelte()],
   clearScreen: false,
   // La compilation Rust verrouille ses fichiers : Vite ne doit pas surveiller src-tauri.
-  server: { port: 1420, strictPort: true, watch: { ignored: ['**/src-tauri/**'] } },
+  // L'app installée en mode front de dev charge http://127.0.0.1:1420 (dev_front.rs).
+  server: { host: '127.0.0.1', port: 1420, strictPort: true, watch: { ignored: ['**/src-tauri/**'] } },
   build: {
     target: 'es2022',
     rollupOptions: { input: { main: page('index.html'), widget: page('widget.html') } },

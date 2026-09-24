@@ -1,4 +1,5 @@
 mod agent;
+mod dev_front;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -103,6 +104,7 @@ pub fn run() {
             } else {
                 open_main(app.handle());
             }
+            dev_front::attach(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {

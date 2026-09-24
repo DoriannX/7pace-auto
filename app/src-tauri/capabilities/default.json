@@ -3,5 +3,13 @@
   "identifier": "default",
   "description": "Fenêtre principale et widget",
   "windows": ["main", "widget"],
-  "permissions": ["core:default", "core:window:allow-start-dragging"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "allow-agent-call",
+    "allow-app-pid",
+    "allow-show-main",
+    "allow-to-widget",
+    "allow-quit"
+  ]
 }
