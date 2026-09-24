@@ -6,14 +6,14 @@ using Xunit;
 namespace SeptPaceAuto.Tests;
 
 /// <summary>
-/// Liaison entre le terminal et le collecteur. Tout y passe par un vrai tuyau nommé : ce
+/// Liaison entre un client et le collecteur. Tout y passe par un vrai tuyau nommé : ce
 /// sont les mêmes classes que sur le poste de l'utilisateur, seul le cœur métier est
 /// scénarisé pour que chaque cas soit reproductible.
 /// </summary>
 public sealed class AgentIpcTests
 {
     [Fact]
-    public async Task Le_terminal_joint_le_collecteur_et_lit_sa_carte_de_visite()
+    public async Task Le_client_joint_le_collecteur_et_lit_sa_carte_de_visite()
     {
         await using var harness = new HostHarness();
         var client = harness.Client();
@@ -86,7 +86,7 @@ public sealed class AgentIpcTests
     }
 
     [Fact]
-    public async Task Sans_collecteur_le_terminal_le_dit_au_lieu_de_pretendre_suivre()
+    public async Task Sans_collecteur_le_client_le_dit_au_lieu_de_pretendre_suivre()
     {
         var folder = Path.Combine(Path.GetTempPath(), "7pace-auto-tests", Guid.NewGuid().ToString("N"));
         await using var client = new AgentClient(AgentEndpoint.For(folder), new DeadLauncher());
@@ -142,7 +142,7 @@ public sealed class AgentIpcTests
     }
 
     [Fact]
-    public async Task Le_terminal_se_rattache_apres_un_redemarrage_du_collecteur()
+    public async Task Le_client_se_rattache_apres_un_redemarrage_du_collecteur()
     {
         await using var harness = new HostHarness();
         var client = harness.Client();
@@ -222,7 +222,7 @@ public sealed class AgentIpcTests
     }
 
     [Fact]
-    public async Task Fermer_le_terminal_ne_touche_pas_au_collecteur()
+    public async Task Fermer_le_client_ne_touche_pas_au_collecteur()
     {
         await using var harness = new HostHarness();
 

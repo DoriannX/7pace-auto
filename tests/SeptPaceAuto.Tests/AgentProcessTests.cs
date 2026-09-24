@@ -7,14 +7,14 @@ namespace SeptPaceAuto.Tests;
 /// <summary>
 /// Le collecteur tel qu'il tourne vraiment : un processus séparé, sans fenêtre, sur un
 /// profil de données temporaire. Ces cas attendent de vrais relevés, et c'est le prix de la
-/// seule preuve qui compte : fermer le terminal n'arrête plus la collecte.
+/// seule preuve qui compte : fermer l'app n'arrête pas la collecte.
 /// </summary>
 public sealed class AgentProcessTests
 {
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(45);
 
     [Fact]
-    public async Task Le_terminal_demarre_le_collecteur_absent_puis_s_y_connecte()
+    public async Task Le_client_demarre_le_collecteur_absent_puis_s_y_connecte()
     {
         await using var profile = new AgentProcessProfile();
         var client = profile.Client();
@@ -50,7 +50,7 @@ public sealed class AgentProcessTests
     }
 
     [Fact]
-    public async Task Fermer_le_terminal_laisse_le_collecteur_collecter()
+    public async Task Fermer_le_client_laisse_le_collecteur_collecter()
     {
         await using var profile = new AgentProcessProfile();
         var client = profile.Client();
@@ -62,7 +62,7 @@ public sealed class AgentProcessTests
         Assert.Contains(date, profile.Read("quick.json"), StringComparison.Ordinal);
         var avant = Observed(await client.HandleAsync("currentDay", "{}", CancellationToken.None));
 
-        // Le terminal s'en va : c'est exactement le geste qui coupait tout en 1.0.9.
+        // Le client s'en va : c'est le geste qui coupait tout avec le terminal 1.0.9.
         await client.DisposeAsync();
 
         var battement = profile.Heartbeat();
@@ -77,9 +77,9 @@ public sealed class AgentProcessTests
                     return ++cycles >= 2;
                 },
                 Patience),
-            "Le collecteur a cessé de relever après la fermeture du terminal.");
+            "Le collecteur a cessé de relever après la fermeture du client.");
 
-        // Rouvrir le terminal retrouve l'état, et la collecte a bien avancé entre-temps.
+        // Rouvrir le client retrouve l'état, et la collecte a bien avancé entre-temps.
         var repris = profile.Client();
         Assert.True(await repris.ConnectAsync(launchIfMissing: false, CancellationToken.None));
 
@@ -88,7 +88,7 @@ public sealed class AgentProcessTests
         {
             Assert.True(document.RootElement.GetProperty("tracking").GetProperty("quickRunning").GetBoolean());
         }
-        Assert.True(Observed(vue) > avant, "Le dernier relevé n’a pas avancé pendant l’absence du terminal.");
+        Assert.True(Observed(vue) > avant, "Le dernier relevé n’a pas avancé pendant l’absence du client.");
 
         await repris.DisposeAsync();
     }

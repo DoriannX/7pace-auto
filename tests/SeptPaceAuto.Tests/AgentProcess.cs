@@ -51,8 +51,8 @@ internal sealed class AgentProcessProfile : IAsyncDisposable
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         start.Environment["SEPTPACE_DATA"] = Folder;
         start.Environment["SEPTPACE_AGENT"] = AgentExecutable;
-        // Sans marque d'ordre d'octets à l'écriture, en UTF-8 à la lecture : le terminal doit
-        // recevoir « 0 » et rendre ses accents tels quels.
+        // Sans marque d'ordre d'octets à l'écriture, en UTF-8 à la lecture : les accents de
+        // --status arrivent tels quels.
         start.StandardInputEncoding = new System.Text.UTF8Encoding(false);
         start.StandardOutputEncoding = new System.Text.UTF8Encoding(false);
 
@@ -109,7 +109,7 @@ internal sealed class AgentProcessProfile : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        // Un collecteur démarré par le terminal n'est pas dans la liste : on le congédie par
+        // Un collecteur démarré par le client n'est pas dans la liste : on le congédie par
         // son propre protocole, sinon il survit au test et verrouille les binaires.
         try
         {
@@ -152,7 +152,7 @@ internal sealed class AgentProcessProfile : IAsyncDisposable
         }
     }
 
-    /// <summary>Lanceur du terminal, reproduit à l'identique mais cadré sur le profil du test.</summary>
+    /// <summary>Lanceur du client, reproduit à l'identique mais cadré sur le profil du test.</summary>
     private sealed class ProcessLauncher : IAgentLauncher
     {
         private readonly AgentProcessProfile _profile;
