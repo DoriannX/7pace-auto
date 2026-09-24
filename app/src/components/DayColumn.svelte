@@ -28,15 +28,20 @@
   }
 
   const EDGE = 6
+  /** Hauteurs en pixels à partir desquelles un bloc affiche une ligne, puis deux. */
+  const ONE_LINE = 13
+  const TWO_LINES = 34
   const TONES = ['var(--amber)', 'var(--magenta)', 'var(--blue)', 'var(--cyan)', 'var(--success)', 'var(--info)', 'var(--amber-bright)']
 
   let area = $state<HTMLDivElement>()
+  let height = $state(0)
   let drag = $state<Drag | null>(null)
 
   const layout = $derived(lanes(entries))
   const ticks = $derived(hourTicks(range))
 
   const pos = (minute: number) => ((minute - range.start) / (range.end - range.start)) * 100
+  const pixels = (minutes: number) => (minutes * height) / (range.end - range.start)
   const keyOf = (entry: Entry, index: number) => entry.id ?? -index - 1
   const spanOf = (entry: Entry): Span => ({ start: toMinutes(entry.start), end: toMinutes(entry.end) })
   const shown = (entry: Entry): Span => (drag?.entry && drag.entry.id === entry.id && drag.preview ? drag.preview : spanOf(entry))
@@ -58,7 +63,8 @@
       if (!entry || entry.sentAt) return
       const box = block.getBoundingClientRect()
       const y = event.clientY - box.top
-      const kind: Kind = y < EDGE ? 'start' : y > box.height - EDGE ? 'end' : 'move'
+      const edge = Math.min(EDGE, box.height / 4)
+      const kind: Kind = y < edge ? 'start' : y > box.height - edge ? 'end' : 'move'
       drag = { kind, entry, origin, span: spanOf(entry), preview: null }
     } else {
       drag = { kind: 'create', entry: null, origin, span: { start: origin, end: origin }, preview: null }
@@ -97,6 +103,7 @@
   </div>
   <div
     bind:this={area}
+    bind:clientHeight={height}
     class="area"
     class:editable
     role="presentation"
@@ -126,17 +133,21 @@
       {@const span = shown(entry)}
       {@const key = keyOf(entry, index)}
       {@const columns = layout.columns.get(key) ?? 1}
+      {@const size = pixels(span.end - span.start)}
       <div
         class="block"
         data-id={entry.id}
+        class:single={size >= ONE_LINE && size < TWO_LINES}
         class:unassigned={isUnassigned(entry)}
         class:locked={!!entry.sentAt}
         class:selected={selected !== null && selected === entry.id}
         style="top: {pos(span.start)}%; height: {pos(span.end) - pos(span.start)}%; left: calc({layout.lane.get(key) ?? 0} * 100% / {columns}); width: calc(100% / {columns} - 3px); --tone: {tone(entry)}"
         title="{toTime(span.start)}–{toTime(span.end)} · {duration(span.end - span.start)}{entry.label ? ' · ' + entry.label : ''}{entry.sentAt ? ' · envoyé' : ''}"
       >
-        <span class="line"><b>{isUnassigned(entry) ? 'sans ticket' : `#${entry.workItem}`}</b> {entry.label}</span>
-        <small>{toTime(span.start)}–{toTime(span.end)} · {duration(span.end - span.start)}</small>
+        {#if size >= ONE_LINE}
+          <span class="label"><b>{isUnassigned(entry) ? 'sans ticket' : `#${entry.workItem}`}</b> {entry.label}</span>
+          <small>{toTime(span.start)}–{toTime(span.end)} · {duration(span.end - span.start)}</small>
+        {/if}
       </div>
     {/each}
 
@@ -218,7 +229,7 @@
 
   .block {
     position: absolute;
-    min-height: 16px;
+    min-height: 2px;
     padding: 2px 8px;
     display: flex;
     flex-direction: column;
@@ -241,7 +252,7 @@
     position: absolute;
     left: 0;
     right: 0;
-    height: 6px;
+    height: min(6px, 25%);
     cursor: ns-resize;
   }
 
@@ -253,13 +264,14 @@
     bottom: 0;
   }
 
-  .line {
+  .label {
+    flex-shrink: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     color: var(--text-muted);
   }
 
-  .line b {
+  .label b {
     color: var(--tone);
     font-weight: 600;
   }
@@ -267,6 +279,24 @@
   .block small {
     color: var(--text-dim);
     font-size: 11px;
+  }
+
+  .block.single {
+    padding: 0 8px;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    line-height: 12px;
+  }
+
+  .single .label {
+    flex-shrink: 1;
+    min-width: 0;
+  }
+
+  .single small {
+    flex-shrink: 0;
+    margin-left: auto;
   }
 
   .block.unassigned {
